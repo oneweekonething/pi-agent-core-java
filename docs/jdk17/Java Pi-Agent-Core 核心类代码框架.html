@@ -1,0 +1,924 @@
+// ============================================================================
+// PART 1: 会话管理核心类
+// ============================================================================
+
+package com.earendil.pi.core.session;
+
+import java.time.LocalDateTime;
+import java.util.*;
+import reactor.core.publisher.Mono;
+
+// 会话树节点
+public record SessionNode(
+    String id,
+    String parentId,
+    List<String> childIds,
+    SessionMessage message,
+    SessionMetadata metadata,
+    LocalDateTime createdAt,
+    LocalDateTime updatedAt
+) {
+    public static Builder builder(String id) {
+        return new Builder(id);
+    }
+    
+    public static class Builder {
+        private String id;
+        private String parentId;
+        private List<String> childIds = new ArrayList<>();
+        private SessionMessage message;
+        private SessionMetadata metadata;
+        
+        public Builder(String id) {
+            this.id = id;
+            this.metadata = new SessionMetadata();
+        }
+        
+        public Builder parentId(String parentId) {
+            this.parentId = parentId;
+            return this;
+        }
+        
+        public Builder message(SessionMessage message) {
+            this.message = message;
+            return this;
+        }
+        
+        public SessionNode build() {
+            return new SessionNode(
+                id, parentId, childIds, message, metadata,
+                LocalDateTime.now(), LocalDateTime.now()
+            );
+        }
+    }
+}
+
+// 会话消息 - 密封接口
+public sealed interface SessionMessage {
+    record UserMessage(
+        String content,
+        Map<String, Object> attachments
+    ) implements SessionMessage {}
+    
+    record AssistantMessage(
+        String content,
+        List<ToolCall> toolCalls,
+        CompletionTokens tokens
+    ) implements SessionMessage {
+        public record CompletionTokens(int input, int output) {}
+    }
+    
+    record ToolResultMessage(
+        String toolName,
+        String toolCallId,
+        String result,
+        ToolStatus status
+    ) implements SessionMessage {
+        public enum ToolStatus {
+            SUCCESS, FAILURE, TIMEOUT, SECURITY_DENIED, UNKNOWN_TOOL
+        }
+    }
+    
+    record SystemMessage(String content) implements SessionMessage {}
+}
+
+// 会话元数据
+public class SessionMetadata {
+    private String title;
+    private Map<String, String> tags = new HashMap<>();
+    private int totalTokens = 0;
+    private List<String> participants = new ArrayList<>();
+    
+    public void incrementTokens(int count) {
+        this.totalTokens += count;
+    }
+    
+    public void addTag(String key, String value) {
+        this.tags.put(key, value);
+    }
+}
+
+// 会话树
+public class SessionTree {
+    private final String sessionId;
+    private final Map<String, SessionNode> nodes;
+    private String currentNodeId;
+    
+    public SessionTree(String sessionId) {
+        this.sessionId = sessionId;
+        this.nodes = new LinkedHashMap<>();
+    }
+    
+    public void addNode(SessionNode node) {
+        nodes.put(node.id(), node);
+        if (node.parentId() != null) {
+            // 更新父节点的子节点列表
+            SessionNode parent = nodes.get(node.parentId());
+            if (parent != null) {
+                parent.childIds().add(node.id());
+            }
+        }
+        this.currentNodeId = node.id();
+    }
+    
+    public SessionNode getCurrentNode() {
+        return nodes.get(currentNodeId);
+    }
+    
+    public List<SessionNode> getHistory(String untilNodeId) {
+        // 从根到指定节点的路径
+        List<SessionNode> history = new ArrayList<>();
+        String nodeId = untilNodeId;
+        while (nodeId != null) {
+            SessionNode node = nodes.get(nodeId);
+            if (node == null) break;
+            history.add(0, node);
+            nodeId = node.parentId();
+        }
+        return history;
+    }
+    
+    public Mono<SessionTree> createBranch() {
+        // 从当前节点分支创建新树
+        return Mono.fromCallable(() -> {
+            SessionTree branch = new SessionTree(
+                UUID.randomUUID().toString()
+            );
+            // 复制当前路径到分支
+            this.getHistory(this.currentNodeId)
+                .forEach(branch::addNode);
+            return branch;
+        });
+    }
+}
+
+// 会话管理器
+public class SessionManager {
+    private final SessionStorage storage;
+    private final Map<String, SessionTree> cachedTrees = new ConcurrentHashMap<>();
+    
+    public SessionManager(SessionStorage storage) {
+        this.storage = storage;
+    }
+    
+    public Mono<SessionNode> appendMessage(
+        String parentNodeId,
+        SessionMessage message
+    ) {
+        String newNodeId = UUID.randomUUID().toString();
+        SessionNode newNode = SessionNode.builder(newNodeId)
+            .parentId(parentNodeId)
+            .message(message)
+            .build();
+        
+        return storage.saveNode(newNode)
+            .doOnSuccess(saved -> {
+                // 更新本地缓存
+                SessionTree tree = cachedTrees.values().stream()
+                    .filter(t -> t.getHistory(saved.parentId()) != null)
+                    .findFirst()
+                    .orElse(null);
+                
+                if (tree != null) {
+                    tree.addNode(saved);
+                }
+            });
+    }
+    
+    public Mono<List<SessionNode>> getHistory(String sessionId) {
+        return storage.loadTree(sessionId)
+            .map(tree -> tree.getHistory(tree.getCurrentNode().id()));
+    }
+    
+    public Mono<Void> rollback(String sessionId, String toNodeId) {
+        return storage.getNode(toNodeId)
+            .flatMap(node -> {
+                // 删除该节点之后的所有子树
+                return storage.deleteSubtree(toNodeId)
+                    .then(Mono.empty());
+            });
+    }
+}
+
+// 会话存储接口
+public interface SessionStorage {
+    Mono<SessionNode> saveNode(SessionNode node);
+    Mono<SessionNode> getNode(String nodeId);
+    Mono<SessionTree> loadTree(String sessionId);
+    Mono<Void> persistTree(SessionTree tree);
+    Mono<Void> deleteSubtree(String rootNodeId);
+}
+
+// ============================================================================
+// PART 2: 工具系统核心类
+// ============================================================================
+
+package com.earendil.pi.core.tools;
+
+// 工具定义
+public record ToolDefinition(
+    String name,
+    String description,
+    ToolParameters parameters,
+    Map<String, Object> metadata
+) {
+    public static Builder builder(String name) {
+        return new Builder(name);
+    }
+    
+    public static class Builder {
+        private final String name;
+        private String description;
+        private final List<Parameter> parameters = new ArrayList<>();
+        private final Map<String, Object> metadata = new HashMap<>();
+        
+        public Builder(String name) {
+            this.name = name;
+        }
+        
+        public Builder description(String desc) {
+            this.description = desc;
+            return this;
+        }
+        
+        public Builder addParameter(String paramName, ParameterType type, 
+                                   String description, boolean required) {
+            parameters.add(new Parameter(paramName, type, description, required));
+            return this;
+        }
+        
+        public ToolDefinition build() {
+            return new ToolDefinition(
+                name, description, 
+                new ToolParameters(parameters), 
+                metadata
+            );
+        }
+    }
+}
+
+// 工具参数
+public class ToolParameters {
+    private final List<Parameter> parameters;
+    
+    public ToolParameters(List<Parameter> parameters) {
+        this.parameters = parameters;
+    }
+    
+    public record Parameter(
+        String name,
+        ParameterType type,
+        String description,
+        boolean required
+    ) {}
+    
+    public enum ParameterType {
+        STRING, NUMBER, BOOLEAN, ARRAY, OBJECT
+    }
+}
+
+// 工具调用
+public record ToolCall(
+    String id,
+    String toolName,
+    Map<String, Object> arguments,
+    LocalDateTime createdAt
+) {}
+
+// 工具执行结果
+public record ToolResult(
+    String toolCallId,
+    ToolStatus status,
+    String output,
+    Map<String, Object> metadata,
+    long executionTimeMs
+) {
+    public enum ToolStatus {
+        SUCCESS, FAILURE, TIMEOUT, SECURITY_DENIED, UNKNOWN_TOOL
+    }
+}
+
+// 工具执行器接口
+@FunctionalInterface
+public interface ToolExecutor {
+    Mono<ToolResult> execute(ToolCall call, ExecutionContext ctx);
+}
+
+// 工具注册表
+public class ToolRegistry {
+    private final Map<String, ToolDefinition> definitions = new ConcurrentHashMap<>();
+    private final Map<String, ToolExecutor> executors = new ConcurrentHashMap<>();
+    private final ToolLoader toolLoader;
+    
+    public ToolRegistry(ToolLoader toolLoader) {
+        this.toolLoader = toolLoader;
+    }
+    
+    public void registerTool(ToolDefinition def, ToolExecutor executor) {
+        definitions.put(def.name(), def);
+        executors.put(def.name(), executor);
+    }
+    
+    public Mono<ToolResult> executeTool(ToolCall call, ExecutionContext ctx) {
+        return Mono.fromCallable(() -> {
+            ToolExecutor executor = executors.get(call.toolName());
+            if (executor == null) {
+                return new ToolResult(
+                    call.id(),
+                    ToolStatus.UNKNOWN_TOOL,
+                    "Tool not found: " + call.toolName(),
+                    Map.of(),
+                    0L
+                );
+            }
+            return executor;
+        })
+        .flatMap(executor -> executor.execute(call, ctx))
+        .timeout(Duration.ofSeconds(30));
+    }
+    
+    public List<ToolDefinition> listAvailableTools() {
+        return new ArrayList<>(definitions.values());
+    }
+    
+    public Mono<Void> loadToolsFromPlugin(String pluginPath) {
+        return toolLoader.loadPlugin(pluginPath)
+            .doOnNext(plugin -> 
+                plugin.getTools().forEach(this::registerTool)
+            )
+            .then();
+    }
+}
+
+// 工具加载器
+public class ToolLoader {
+    public Mono<PluginDescriptor> loadPlugin(String pluginPath) {
+        return Mono.fromCallable(() -> {
+            // 使用 URLClassLoader 加载 JAR
+            URL jarUrl = new File(pluginPath).toURI().toURL();
+            URLClassLoader loader = new URLClassLoader(new URL[]{jarUrl});
+            
+            // 扫描 @Tool 注解
+            return scanToolAnnotations(loader);
+        });
+    }
+    
+    private PluginDescriptor scanToolAnnotations(URLClassLoader loader) {
+        // 使用反射扫描类路径中的 @Tool 注解
+        // 返回工具定义和执行器的映射
+        return new PluginDescriptor(new HashMap<>());
+    }
+}
+
+public record PluginDescriptor(Map<ToolDefinition, ToolExecutor> tools) {}
+
+// ============================================================================
+// PART 3: 上下文管理核心类
+// ============================================================================
+
+package com.earendil.pi.core.context;
+
+// 上下文层级枚举
+public enum ContextLayer {
+    SYSTEM(6, "系统级上下文"),
+    CONVERSATION(5, "对话级上下文"),
+    TURN(4, "轮次级上下文"),
+    TOOL_EXECUTION(3, "工具执行上下文"),
+    USER_PROVIDED(2, "用户提供"),
+    DYNAMIC(1, "动态注入");
+    
+    public final int priority;
+    public final String description;
+    
+    ContextLayer(int priority, String description) {
+        this.priority = priority;
+        this.description = description;
+    }
+}
+
+// 上下文条目
+public record ContextEntry(
+    String key,
+    Object value,
+    ContextLayer layer,
+    int tokenCount,
+    LocalDateTime addedAt,
+    Map<String, String> tags
+) {}
+
+// 上下文管理器
+public class ContextManager {
+    private final TreeMap<ContextLayer, List<ContextEntry>> layers;
+    private final ContextCompressor compressor;
+    private final int maxTokens;
+    private final TokenCounter tokenCounter;
+    
+    public ContextManager(int maxTokens, ContextCompressor compressor) {
+        this.maxTokens = maxTokens;
+        this.compressor = compressor;
+        this.tokenCounter = new TokenCounter();
+        this.layers = new TreeMap<>(
+            Comparator.comparingInt((ContextLayer l) -> l.priority).reversed()
+        );
+    }
+    
+    public synchronized void addContext(
+        String key,
+        Object value,
+        ContextLayer layer
+    ) {
+        addContext(key, value, layer, Map.of());
+    }
+    
+    public synchronized void addContext(
+        String key,
+        Object value,
+        ContextLayer layer,
+        Map<String, String> tags
+    ) {
+        int tokenCount = tokenCounter.count(value);
+        
+        ContextEntry entry = new ContextEntry(
+            key, value, layer, tokenCount, LocalDateTime.now(), tags
+        );
+        
+        layers.computeIfAbsent(layer, _ -> new ArrayList<>())
+            .add(entry);
+        
+        // 如果超过 80% 容量，触发压缩
+        if (getTotalTokens() > maxTokens * 0.8) {
+            compress();
+        }
+    }
+    
+    public synchronized Map<String, Object> assembleContext() {
+        Map<String, Object> assembled = new LinkedHashMap<>();
+        
+        layers.values().stream()
+            .flatMap(List::stream)
+            .forEach(entry -> 
+                assembled.put(entry.key(), entry.value())
+            );
+        
+        return assembled;
+    }
+    
+    public synchronized List<ContextEntry> getContext() {
+        return layers.values().stream()
+            .flatMap(List::stream)
+            .collect(Collectors.toList());
+    }
+    
+    private void compress() {
+        List<ContextEntry> allEntries = getContext();
+        List<ContextEntry> compressed = compressor.compress(allEntries, maxTokens);
+        
+        // 重新组织层结构
+        layers.clear();
+        compressed.forEach(entry ->
+            layers.computeIfAbsent(entry.layer(), _ -> new ArrayList<>())
+                .add(entry)
+        );
+    }
+    
+    private int getTotalTokens() {
+        return layers.values().stream()
+            .flatMap(List::stream)
+            .mapToInt(ContextEntry::tokenCount)
+            .sum();
+    }
+}
+
+// 上下文压缩器接口
+public interface ContextCompressor {
+    List<ContextEntry> compress(List<ContextEntry> entries, int maxTokens);
+}
+
+// 自适应压缩实现
+public class AdaptiveContextCompressor implements ContextCompressor {
+    private final LLMProvider llmProvider;
+    
+    public AdaptiveContextCompressor(LLMProvider llmProvider) {
+        this.llmProvider = llmProvider;
+    }
+    
+    @Override
+    public List<ContextEntry> compress(
+        List<ContextEntry> entries,
+        int maxTokens
+    ) {
+        int currentTokens = entries.stream()
+            .mapToInt(ContextEntry::tokenCount)
+            .sum();
+        
+        if (currentTokens <= maxTokens) {
+            return entries;
+        }
+        
+        // 分层压缩策略
+        List<ContextEntry> highPriority = entries.stream()
+            .filter(e -> e.layer().priority >= 4)
+            .toList();
+        
+        List<ContextEntry> lowPriority = entries.stream()
+            .filter(e -> e.layer().priority < 4)
+            .toList();
+        
+        List<ContextEntry> result = new ArrayList<>(highPriority);
+        int remainingTokens = maxTokens - highPriority.stream()
+            .mapToInt(ContextEntry::tokenCount)
+            .sum();
+        
+        if (remainingTokens > 0) {
+            result.addAll(compressLowPriority(lowPriority, remainingTokens));
+        }
+        
+        return result;
+    }
+    
+    private List<ContextEntry> compressLowPriority(
+        List<ContextEntry> entries,
+        int maxTokens
+    ) {
+        // 使用 LLM 对低优先级内容进行摘要
+        // 实现细节...
+        return entries;
+    }
+}
+
+// 令牌计数器
+public class TokenCounter {
+    private final Tokenizer tokenizer;
+    
+    public TokenCounter() {
+        // 使用 OpenAI 的 Tokenizer
+        this.tokenizer = Tokenizer.getEncoding("cl100k_base");
+    }
+    
+    public int count(Object value) {
+        String text = serialize(value);
+        return tokenizer.encode(text).length;
+    }
+    
+    private String serialize(Object value) {
+        if (value instanceof String) {
+            return (String) value;
+        }
+        // Jackson 序列化
+        try {
+            return new ObjectMapper().writeValueAsString(value);
+        } catch (Exception e) {
+            return value.toString();
+        }
+    }
+}
+
+// ============================================================================
+// PART 4: Agent 执行引擎核心
+// ============================================================================
+
+package com.earendil.pi.core.runtime;
+
+// Agent 执行器
+public class AgentExecutor {
+    private final LLMProvider llmProvider;
+    private final SessionManager sessionManager;
+    private final ToolRegistry toolRegistry;
+    private final ContextManager contextManager;
+    private final SecurityManager securityManager;
+    private final AgentConfig config;
+    
+    public AgentExecutor(
+        LLMProvider llmProvider,
+        SessionManager sessionManager,
+        ToolRegistry toolRegistry,
+        ContextManager contextManager,
+        SecurityManager securityManager,
+        AgentConfig config
+    ) {
+        this.llmProvider = llmProvider;
+        this.sessionManager = sessionManager;
+        this.toolRegistry = toolRegistry;
+        this.contextManager = contextManager;
+        this.securityManager = securityManager;
+        this.config = config;
+    }
+    
+    public Mono<AgentResponse> execute(
+        String userInput,
+        String sessionId,
+        PermissionContext permissions
+    ) {
+        return sessionManager.getHistory(sessionId)
+            .flatMap(history -> executeLoop(
+                userInput,
+                sessionId,
+                history,
+                permissions,
+                0
+            ));
+    }
+    
+    private Mono<AgentResponse> executeLoop(
+        String userInput,
+        String sessionId,
+        List<SessionNode> history,
+        PermissionContext permissions,
+        int toolCallCount
+    ) {
+        return Mono.defer(() -> {
+            // 1. 组装上下文
+            Map<String, Object> ctx = contextManager.assembleContext();
+            
+            // 2. 构建 LLM 消息
+            List<LLMMessage> messages = buildLLMMessages(history, ctx, userInput);
+            
+            // 3. 调用 LLM
+            return llmProvider.chatCompletion(messages, config.llmConfig())
+                // 4. 处理响应
+                .flatMap(response -> handleLLMResponse(
+                    response,
+                    sessionId,
+                    history,
+                    permissions,
+                    toolCallCount
+                ))
+                .retryWhen(Retry.backoff(3, Duration.ofSeconds(1)));
+        });
+    }
+    
+    private Mono<AgentResponse> handleLLMResponse(
+        ChatCompletionResponse response,
+        String sessionId,
+        List<SessionNode> history,
+        PermissionContext permissions,
+        int toolCallCount
+    ) {
+        if (response.toolCalls().isEmpty()) {
+            // 无工具调用，直接返回
+            return Mono.just(new AgentResponse(
+                response.content(),
+                List.of(),
+                true
+            ));
+        }
+        
+        // 执行工具调用
+        return Flux.fromIterable(response.toolCalls())
+            .flatMap(toolCall -> 
+                toolRegistry.executeTool(toolCall, null)
+                    .onErrorResume(e -> Mono.just(
+                        new ToolResult(
+                            toolCall.id(),
+                            ToolStatus.FAILURE,
+                            e.getMessage(),
+                            Map.of(),
+                            0L
+                        )
+                    ))
+            )
+            .collectList()
+            .flatMap(toolResults -> {
+                // 检查是否继续循环
+                if (toolCallCount >= config.maxToolCalls()) {
+                    return Mono.just(new AgentResponse(
+                        "Max tool calls reached",
+                        toolResults,
+                        false
+                    ));
+                }
+                
+                // 继续执行循环
+                String continuationInput = formatToolResults(toolResults);
+                return executeLoop(
+                    continuationInput,
+                    sessionId,
+                    history,
+                    permissions,
+                    toolCallCount + 1
+                );
+            });
+    }
+    
+    private List<LLMMessage> buildLLMMessages(
+        List<SessionNode> history,
+        Map<String, Object> context,
+        String userInput
+    ) {
+        List<LLMMessage> messages = new ArrayList<>();
+        
+        // 系统消息
+        messages.add(new SystemMessage(buildSystemPrompt(context)));
+        
+        // 历史消息
+        history.forEach(node -> {
+            if (node.message() instanceof SessionMessage.UserMessage um) {
+                messages.add(new UserMessage(um.content(), List.of()));
+            } else if (node.message() instanceof SessionMessage.AssistantMessage am) {
+                messages.add(new AssistantMessage(am.content(), am.toolCalls()));
+            }
+        });
+        
+        // 当前用户输入
+        messages.add(new UserMessage(userInput, List.of()));
+        
+        return messages;
+    }
+    
+    private String buildSystemPrompt(Map<String, Object> context) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("You are a helpful AI assistant.\n\n");
+        
+        List<ToolDefinition> tools = toolRegistry.listAvailableTools();
+        if (!tools.isEmpty()) {
+            sb.append("Available tools:\n");
+            tools.forEach(tool ->
+                sb.append(String.format("- %s: %s\n", tool.name(), tool.description()))
+            );
+        }
+        
+        return sb.toString();
+    }
+    
+    private String formatToolResults(List<ToolResult> results) {
+        return results.stream()
+            .map(r -> String.format("Tool %s: %s", r.toolCallId(), r.output()))
+            .collect(Collectors.joining("\n"));
+    }
+}
+
+// Agent 配置
+public record AgentConfig(
+    LLMConfig llmConfig,
+    int maxToolCalls,
+    int contextTokenLimit,
+    boolean enableLogging
+) {
+    public static Builder builder() {
+        return new Builder();
+    }
+    
+    public static class Builder {
+        private LLMConfig llmConfig = LLMConfig.builder("gpt-4").build();
+        private int maxToolCalls = 10;
+        private int contextTokenLimit = 8000;
+        private boolean enableLogging = true;
+        
+        public Builder llmConfig(LLMConfig config) {
+            this.llmConfig = config;
+            return this;
+        }
+        
+        public AgentConfig build() {
+            return new AgentConfig(
+                llmConfig, maxToolCalls, contextTokenLimit, enableLogging
+            );
+        }
+    }
+}
+
+// Agent 响应
+public record AgentResponse(
+    String message,
+    List<ToolResult> toolResults,
+    boolean success
+) {}
+
+// ============================================================================
+// PART 5: 安全管理核心
+// ============================================================================
+
+package com.earendil.pi.core.security;
+
+// 权限上下文
+public record PermissionContext(
+    String userId,
+    List<String> roles,
+    Map<String, Object> attributes
+) {
+    public boolean hasRole(String role) {
+        return roles.contains(role);
+    }
+}
+
+// 安全策略接口
+public interface SecurityPolicy {
+    Mono<Boolean> canExecuteTool(String toolName, PermissionContext ctx);
+    Mono<Boolean> canAccessResource(String resourceId, PermissionContext ctx);
+}
+
+// 基于角色的安全策略
+public class RoleBasedSecurityPolicy implements SecurityPolicy {
+    private final Map<String, Set<String>> roleToTools = new ConcurrentHashMap<>();
+    
+    @Override
+    public Mono<Boolean> canExecuteTool(String toolName, PermissionContext ctx) {
+        return Mono.fromCallable(() ->
+            ctx.roles().stream()
+                .anyMatch(role ->
+                    roleToTools.getOrDefault(role, Set.of())
+                        .contains(toolName)
+                )
+        ).cache();
+    }
+    
+    @Override
+    public Mono<Boolean> canAccessResource(String resourceId, PermissionContext ctx) {
+        return Mono.just(true);
+    }
+    
+    public void grantToolAccess(String role, String toolName) {
+        roleToTools.computeIfAbsent(role, _ -> new HashSet<>())
+            .add(toolName);
+    }
+}
+
+// 隔离执行器接口
+public interface IsolationExecutor {
+    Mono<ToolResult> executeIsolated(ToolCall call, IsolationMode mode);
+}
+
+public enum IsolationMode {
+    NONE,
+    PROCESS,
+    CONTAINER,
+    VM
+}
+
+// ============================================================================
+// 共享类型定义
+// ============================================================================
+
+package com.earendil.pi.core.common;
+
+import java.time.LocalDateTime;
+
+// LLM 消息格式
+public sealed interface LLMMessage {
+    record SystemMessage(String content) implements LLMMessage {}
+    record UserMessage(String content, List<ContentBlock> blocks) implements LLMMessage {}
+    record AssistantMessage(String content, List<ToolCall> toolCalls) implements LLMMessage {}
+}
+
+// LLM 完成响应
+public record ChatCompletionResponse(
+    String messageId,
+    String content,
+    List<ToolCall> toolCalls,
+    CompletionTokens tokens
+) {
+    public record CompletionTokens(int inputTokens, int outputTokens) {}
+}
+
+// LLM 配置
+public record LLMConfig(
+    String modelName,
+    float temperature,
+    int maxTokens,
+    float topP
+) {
+    public static Builder builder(String modelName) {
+        return new Builder(modelName);
+    }
+    
+    public static class Builder {
+        private String modelName;
+        private float temperature = 0.7f;
+        private int maxTokens = 2048;
+        private float topP = 1.0f;
+        
+        public Builder(String modelName) {
+            this.modelName = modelName;
+        }
+        
+        public Builder temperature(float t) {
+            this.temperature = t;
+            return this;
+        }
+        
+        public LLMConfig build() {
+            return new LLMConfig(modelName, temperature, maxTokens, topP);
+        }
+    }
+}
+
+// LLM 提供商接口
+public interface LLMProvider {
+    Mono<ChatCompletionResponse> chatCompletion(
+        List<LLMMessage> messages,
+        LLMConfig config
+    );
+}
+
+// 执行上下文
+public record ExecutionContext(
+    String sessionId,
+    String messageNodeId,
+    LocalDateTime executedAt
+) {}
+
+// Content Block
+public sealed interface ContentBlock {
+    record TextBlock(String text) implements ContentBlock {}
+    record ImageBlock(String url, String mediaType) implements ContentBlock {}
+}

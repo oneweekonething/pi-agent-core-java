@@ -1,0 +1,949 @@
+// ============================================================================
+// Pi Agent-Core: JDK 8 兼容实现
+// ============================================================================
+// 注意：所有代码使用 JDK 8 原生特性（Lambda、Stream、CompletableFuture）
+// 无需额外反应式编程库
+
+// ============================================================================
+// 1. 会话管理模块 (pi-session-manager)
+// ============================================================================
+
+package com.earendil.pi.session;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import org.rocksdb.*;
+
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.Collectors;
+
+/**
+ * 会话节点 - 表示单个对话轮次
+ */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class SessionNode {
+    private String id;
+    private String sessionId;
+    private String parentId;
+    private List<String> childIds;
+    
+    @JsonProperty("role")
+    private String role;  // "user", "assistant", "tool", "system"
+    
+    @JsonProperty("content")
+    private String content;
+    
+    @JsonProperty("tool_calls")
+    private List<ToolCall> toolCalls;
+    
+    @JsonProperty("metadata")
+    private Map<String, Object> metadata;
+    
+    @JsonProperty("timestamp")
+    private long timestamp;
+    
+    @JsonProperty("tokens")
+    private int tokens;
+    
+    public static SessionNode createUserMessage(String sessionId, String content) {
+        return SessionNode.builder()
+                .id(UUID.randomUUID().toString())
+                .sessionId(sessionId)
+                .role("user")
+                .content(content)
+                .timestamp(System.currentTimeMillis())
+                .childIds(new ArrayList<>())
+                .metadata(new HashMap<>())
+                .build();
+    }
+}
+
+/**
+ * 工具调用信息
+ */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class ToolCall {
+    private String id;
+    private String name;
+    private Map<String, Object> arguments;
+    private String result;
+    private long executionTime;
+}
+
+/**
+ * 会话树 - 管理整个对话树结构
+ */
+@Data
+@NoArgsConstructor
+public class SessionTree {
+    private String id;
+    private String title;
+    private long createdAt;
+    private long updatedAt;
+    private List<SessionNode> nodes;
+    private String rootNodeId;
+    private Map<String, Object> metadata;
+    
+    public SessionTree(String id) {
+        this.id = id;
+        this.createdAt = System.currentTimeMillis();
+        this.updatedAt = this.createdAt;
+        this.nodes = new ArrayList<>();
+        this.metadata = new HashMap<>();
+    }
+    
+    /**
+     * 添加节点到树中
+     */
+    public void addNode(SessionNode node) {
+        this.nodes.add(node);
+        this.updatedAt = System.currentTimeMillis();
+        if (this.rootNodeId == null && node.getParentId() == null) {
+            this.rootNodeId = node.getId();
+        }
+    }
+    
+    /**
+     * 创建分支（对话分支）
+     */
+    public SessionNode branch(String fromNodeId, String newContent) {
+        SessionNode sourceNode = nodes.stream()
+                .filter(n -> n.getId().equals(fromNodeId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Node not found: " + fromNodeId));
+        
+        SessionNode newNode = SessionNode.builder()
+                .id(UUID.randomUUID().toString())
+                .sessionId(this.id)
+                .parentId(fromNodeId)
+                .role("user")
+                .content(newContent)
+                .timestamp(System.currentTimeMillis())
+                .childIds(new ArrayList<>())
+                .metadata(new HashMap<>())
+                .build();
+        
+        addNode(newNode);
+        sourceNode.getChildIds().add(newNode.getId());
+        
+        return newNode;
+    }
+    
+    /**
+     * 遍历树结构（DFS）
+     */
+    public List<SessionNode> traverse(String nodeId) {
+        List<SessionNode> result = new ArrayList<>();
+        traverseDFS(nodeId, result);
+        return result;
+    }
+    
+    private void traverseDFS(String nodeId, List<SessionNode> result) {
+        nodes.stream()
+                .filter(n -> n.getId().equals(nodeId))
+                .findFirst()
+                .ifPresent(node -> {
+                    result.add(node);
+                    node.getChildIds().forEach(childId -> traverseDFS(childId, result));
+                });
+    }
+    
+    /**
+     * 转换为 JSONL 格式
+     */
+    public String toJsonl(ObjectMapper mapper) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        for (SessionNode node : nodes) {
+            sb.append(mapper.writeValueAsString(node)).append("\n");
+        }
+        return sb.toString();
+    }
+}
+
+/**
+ * 会话管理器 - 异步会话操作
+ */
+public class SessionManager {
+    private static final String SESSIONS_CF = "sessions";
+    private static final String NODES_CF = "nodes";
+    
+    private final RocksDB db;
+    private final ColumnFamilyHandle sessionsCF;
+    private final ColumnFamilyHandle nodesCF;
+    private final ObjectMapper mapper;
+    private final Cache<String, SessionTree> sessionCache;
+    private final ExecutorService executor;
+    
+    public SessionManager(RocksDB db, ObjectMapper mapper, Cache<String, SessionTree> cache) {
+        this.db = db;
+        this.mapper = mapper;
+        this.sessionCache = cache;
+        this.sessionsCF = db.getColumnFamilyHandle(SESSIONS_CF);
+        this.nodesCF = db.getColumnFamilyHandle(NODES_CF);
+        this.executor = Executors.newFixedThreadPool(10);
+    }
+    
+    /**
+     * 异步创建会话
+     */
+    public CompletableFuture<SessionTree> createSessionAsync(String sessionId, String title) {
+        return CompletableFuture.supplyAsync(() -> {
+            SessionTree tree = new SessionTree(sessionId);
+            tree.setTitle(title);
+            
+            try {
+                String json = mapper.writeValueAsString(tree);
+                db.put(sessionsCF, sessionId.getBytes(), json.getBytes());
+                sessionCache.put(sessionId, tree);
+            } catch (IOException e) {
+                throw new CompletionException(e);
+            }
+            
+            return tree;
+        }, executor);
+    }
+    
+    /**
+     * 异步获取会话
+     */
+    public CompletableFuture<SessionTree> getSessionAsync(String sessionId) {
+        return CompletableFuture.supplyAsync(() -> {
+            // 先查缓存
+            SessionTree cached = sessionCache.getIfPresent(sessionId);
+            if (cached != null) {
+                return cached;
+            }
+            
+            // 再查 RocksDB
+            try {
+                byte[] data = db.get(sessionsCF, sessionId.getBytes());
+                if (data == null) {
+                    throw new IllegalArgumentException("Session not found: " + sessionId);
+                }
+                
+                SessionTree tree = mapper.readValue(data, SessionTree.class);
+                sessionCache.put(sessionId, tree);
+                return tree;
+            } catch (IOException e) {
+                throw new CompletionException(e);
+            }
+        }, executor);
+    }
+    
+    /**
+     * 异步保存会话
+     */
+    public CompletableFuture<Void> saveSessionAsync(SessionTree tree) {
+        return CompletableFuture.runAsync(() -> {
+            try {
+                String json = mapper.writeValueAsString(tree);
+                db.put(sessionsCF, tree.getId().getBytes(), json.getBytes());
+                sessionCache.put(tree.getId(), tree);
+            } catch (IOException e) {
+                throw new CompletionException(e);
+            }
+        }, executor);
+    }
+    
+    /**
+     * 异步添加节点到会话
+     */
+    public CompletableFuture<SessionNode> addNodeAsync(String sessionId, SessionNode node) {
+        return getSessionAsync(sessionId)
+                .thenApplyAsync(tree -> {
+                    tree.addNode(node);
+                    try {
+                        String nodeJson = mapper.writeValueAsString(node);
+                        db.put(nodesCF, node.getId().getBytes(), nodeJson.getBytes());
+                        return saveSessionAsync(tree)
+                                .thenApply(v -> node)
+                                .get();
+                    } catch (IOException | InterruptedException | ExecutionException e) {
+                        throw new CompletionException(e);
+                    }
+                }, executor);
+    }
+    
+    /**
+     * 异步查询节点
+     */
+    public CompletableFuture<SessionNode> getNodeAsync(String nodeId) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                byte[] data = db.get(nodesCF, nodeId.getBytes());
+                if (data == null) {
+                    throw new IllegalArgumentException("Node not found: " + nodeId);
+                }
+                return mapper.readValue(data, SessionNode.class);
+            } catch (IOException e) {
+                throw new CompletionException(e);
+            }
+        }, executor);
+    }
+}
+
+// ============================================================================
+// 2. 工具系统模块 (pi-tool-system)
+// ============================================================================
+
+package com.earendil.pi.tool;
+
+import java.lang.annotation.*;
+import java.lang.reflect.Method;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.Collectors;
+
+/**
+ * 工具定义注解
+ */
+@Target(ElementType.TYPE)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface PiTool {
+    String name();
+    String description();
+    String version() default "1.0.0";
+}
+
+/**
+ * 工具参数定义注解
+ */
+@Target(ElementType.PARAMETER)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface ToolParam {
+    String name();
+    String description();
+    boolean required() default true;
+    String type() default "string";
+}
+
+/**
+ * 工具执行结果
+ */
+public class ToolResult {
+    private boolean success;
+    private String output;
+    private Map<String, Object> metadata;
+    private long executionTime;
+    
+    public ToolResult(boolean success, String output) {
+        this.success = success;
+        this.output = output;
+        this.metadata = new HashMap<>();
+        this.executionTime = 0;
+    }
+    
+    // Getters and setters
+    public boolean isSuccess() { return success; }
+    public String getOutput() { return output; }
+    public Map<String, Object> getMetadata() { return metadata; }
+    public long getExecutionTime() { return executionTime; }
+    public void setExecutionTime(long time) { this.executionTime = time; }
+}
+
+/**
+ * 工具定义接口
+ */
+public interface Tool {
+    /**
+     * 执行工具
+     */
+    CompletableFuture<ToolResult> execute(Map<String, Object> params);
+    
+    /**
+     * 获取工具元数据
+     */
+    Map<String, Object> getMetadata();
+    
+    /**
+     * 获取工具名称
+     */
+    String getName();
+}
+
+/**
+ * 工具注册表
+ */
+public class ToolRegistry {
+    private final Map<String, Tool> tools = new ConcurrentHashMap<>();
+    private final ExecutorService toolExecutor = new ThreadPoolExecutor(
+            10,
+            50,
+            60,
+            TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(500)
+    );
+    
+    /**
+     * 注册工具
+     */
+    public void register(String name, Tool tool) {
+        tools.put(name, tool);
+    }
+    
+    /**
+     * 获取工具
+     */
+    public Tool getTool(String name) {
+        Tool tool = tools.get(name);
+        if (tool == null) {
+            throw new IllegalArgumentException("Tool not found: " + name);
+        }
+        return tool;
+    }
+    
+    /**
+     * 列出所有工具
+     */
+    public List<String> listTools() {
+        return new ArrayList<>(tools.keySet());
+    }
+    
+    /**
+     * 异步执行工具（带超时和重试）
+     */
+    public CompletableFuture<ToolResult> executeAsync(String toolName, Map<String, Object> params) {
+        return executeAsync(toolName, params, 30, TimeUnit.SECONDS, 3);
+    }
+    
+    public CompletableFuture<ToolResult> executeAsync(
+            String toolName,
+            Map<String, Object> params,
+            long timeout,
+            TimeUnit timeoutUnit,
+            int maxRetries) {
+        
+        Tool tool = getTool(toolName);
+        
+        return executeWithRetry(tool, params, maxRetries)
+                .orTimeout(timeout, timeoutUnit)
+                .exceptionally(ex -> {
+                    ToolResult result = new ToolResult(false, "Tool execution failed: " + ex.getMessage());
+                    return result;
+                });
+    }
+    
+    /**
+     * 带重试的执行
+     */
+    private CompletableFuture<ToolResult> executeWithRetry(Tool tool, Map<String, Object> params, int retries) {
+        return tool.execute(params)
+                .exceptionally(ex -> {
+                    if (retries > 0) {
+                        return executeWithRetry(tool, params, retries - 1)
+                                .join();  // 阻塞等待重试结果
+                    }
+                    throw new CompletionException(ex);
+                });
+    }
+    
+    public void shutdown() {
+        toolExecutor.shutdown();
+    }
+}
+
+/**
+ * 工具执行器示例 - 文件读取工具
+ */
+@PiTool(name = "read_file", description = "读取文件内容")
+public class ReadFileTool implements Tool {
+    
+    @Override
+    public CompletableFuture<ToolResult> execute(Map<String, Object> params) {
+        return CompletableFuture.supplyAsync(() -> {
+            long startTime = System.currentTimeMillis();
+            
+            try {
+                String filePath = (String) params.get("path");
+                String content = new String(
+                        java.nio.file.Files.readAllBytes(
+                                java.nio.file.Paths.get(filePath)
+                        )
+                );
+                
+                ToolResult result = new ToolResult(true, content);
+                result.setExecutionTime(System.currentTimeMillis() - startTime);
+                return result;
+            } catch (Exception e) {
+                ToolResult result = new ToolResult(false, e.getMessage());
+                result.setExecutionTime(System.currentTimeMillis() - startTime);
+                return result;
+            }
+        });
+    }
+    
+    @Override
+    public Map<String, Object> getMetadata() {
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("name", "read_file");
+        meta.put("description", "读取文件内容");
+        meta.put("params", Arrays.asList(
+                new HashMap<String, String>() {{
+                    put("name", "path");
+                    put("type", "string");
+                    put("required", "true");
+                }}
+        ));
+        return meta;
+    }
+    
+    @Override
+    public String getName() {
+        return "read_file";
+    }
+}
+
+// ============================================================================
+// 3. LLM 适配层 (pi-llm-adapter)
+// ============================================================================
+
+package com.earendil.pi.llm;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import okhttp3.*;
+
+import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * LLM 消息格式
+ */
+public class Message {
+    private String role;
+    private String content;
+    
+    public Message(String role, String content) {
+        this.role = role;
+        this.content = content;
+    }
+    
+    // Getters and setters
+    public String getRole() { return role; }
+    public String getContent() { return content; }
+    public void setRole(String role) { this.role = role; }
+    public void setContent(String content) { this.content = content; }
+}
+
+/**
+ * LLM 响应格式
+ */
+public class LLMResponse {
+    private String id;
+    private String content;
+    private int promptTokens;
+    private int completionTokens;
+    private Map<String, Object> metadata;
+    
+    public LLMResponse(String id, String content, int promptTokens, int completionTokens) {
+        this.id = id;
+        this.content = content;
+        this.promptTokens = promptTokens;
+        this.completionTokens = completionTokens;
+        this.metadata = new HashMap<>();
+    }
+    
+    // Getters
+    public String getId() { return id; }
+    public String getContent() { return content; }
+    public int getPromptTokens() { return promptTokens; }
+    public int getCompletionTokens() { return completionTokens; }
+    public int getTotalTokens() { return promptTokens + completionTokens; }
+    public Map<String, Object> getMetadata() { return metadata; }
+}
+
+/**
+ * LLM 适配器基类
+ */
+public abstract class LLMAdapter {
+    protected String apiKey;
+    protected String model;
+    protected OkHttpClient httpClient;
+    protected ObjectMapper mapper;
+    
+    protected LLMAdapter(String apiKey, String model) {
+        this.apiKey = apiKey;
+        this.model = model;
+        this.httpClient = new OkHttpClient.Builder()
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .build();
+        this.mapper = new ObjectMapper();
+    }
+    
+    /**
+     * 异步调用 LLM
+     */
+    public abstract CompletableFuture<LLMResponse> callAsync(List<Message> messages, Map<String, Object> params);
+    
+    /**
+     * 创建 HTTP 请求
+     */
+    protected Request.Builder createRequestBuilder() {
+        return new Request.Builder()
+                .addHeader("Authorization", "Bearer " + apiKey)
+                .addHeader("Content-Type", "application/json");
+    }
+}
+
+/**
+ * OpenAI 适配器示例
+ */
+public class OpenAIAdapter extends LLMAdapter {
+    private static final String API_URL = "https://api.openai.com/v1/chat/completions";
+    
+    public OpenAIAdapter(String apiKey, String model) {
+        super(apiKey, model);
+    }
+    
+    @Override
+    public CompletableFuture<LLMResponse> callAsync(List<Message> messages, Map<String, Object> params) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                // 构建请求体
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("model", model);
+                body.put("messages", messages);
+                body.put("temperature", params.getOrDefault("temperature", 0.7));
+                body.put("max_tokens", params.getOrDefault("max_tokens", 2048));
+                
+                RequestBody requestBody = RequestBody.create(
+                        MediaType.parse("application/json"),
+                        mapper.writeValueAsString(body)
+                );
+                
+                Request request = createRequestBuilder()
+                        .url(API_URL)
+                        .post(requestBody)
+                        .build();
+                
+                // 执行请求
+                Response response = httpClient.newCall(request).execute();
+                
+                if (!response.isSuccessful()) {
+                    throw new IOException("API call failed: " + response.code());
+                }
+                
+                // 解析响应
+                String responseBody = response.body().string();
+                Map<String, Object> jsonResponse = mapper.readValue(responseBody, Map.class);
+                
+                List<Map<String, Object>> choices = (List<Map<String, Object>>) jsonResponse.get("choices");
+                Map<String, Object> message = (Map<String, Object>) choices.get(0).get("message");
+                
+                Map<String, Object> usage = (Map<String, Object>) jsonResponse.get("usage");
+                int promptTokens = ((Number) usage.get("prompt_tokens")).intValue();
+                int completionTokens = ((Number) usage.get("completion_tokens")).intValue();
+                
+                return new LLMResponse(
+                        (String) jsonResponse.get("id"),
+                        (String) message.get("content"),
+                        promptTokens,
+                        completionTokens
+                );
+            } catch (IOException e) {
+                throw new CompletionException(e);
+            }
+        });
+    }
+}
+
+// ============================================================================
+// 4. Agent 执行引擎 (pi-agent-runtime)
+// ============================================================================
+
+package com.earendil.pi.agent;
+
+import com.earendil.pi.session.SessionNode;
+import com.earendil.pi.session.SessionTree;
+import com.earendil.pi.session.SessionManager;
+import com.earendil.pi.tool.ToolRegistry;
+import com.earendil.pi.llm.LLMAdapter;
+import com.earendil.pi.llm.Message;
+
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * Agent 执行引擎 - 完整的执行循环
+ */
+public class AgentExecutor {
+    private final SessionManager sessionManager;
+    private final ToolRegistry toolRegistry;
+    private final LLMAdapter llmAdapter;
+    private final ContextManager contextManager;
+    private final AtomicInteger activeRequests = new AtomicInteger(0);
+    
+    public AgentExecutor(
+            SessionManager sessionManager,
+            ToolRegistry toolRegistry,
+            LLMAdapter llmAdapter,
+            ContextManager contextManager) {
+        this.sessionManager = sessionManager;
+        this.toolRegistry = toolRegistry;
+        this.llmAdapter = llmAdapter;
+        this.contextManager = contextManager;
+    }
+    
+    /**
+     * 异步执行 Agent 单个循环
+     */
+    public CompletableFuture<AgentResponse> executeAsync(String sessionId, String userMessage) {
+        activeRequests.incrementAndGet();
+        
+        return sessionManager.getSessionAsync(sessionId)
+                .thenCompose(session -> addUserMessageAsync(session, userMessage))
+                .thenCompose(session -> callLLMAsync(session))
+                .thenCompose(response -> handleToolCallsAsync(response))
+                .thenCompose(response -> sessionManager.saveSessionAsync(response.getSession())
+                        .thenApply(v -> response))
+                .whenComplete((result, ex) -> activeRequests.decrementAndGet());
+    }
+    
+    /**
+     * Step 1: 添加用户消息
+     */
+    private CompletableFuture<SessionTree> addUserMessageAsync(SessionTree session, String userMessage) {
+        return CompletableFuture.supplyAsync(() -> {
+            SessionNode userNode = SessionNode.createUserMessage(session.getId(), userMessage);
+            session.addNode(userNode);
+            return session;
+        });
+    }
+    
+    /**
+     * Step 2: 调用 LLM
+     */
+    private CompletableFuture<AgentResponse> callLLMAsync(SessionTree session) {
+        return CompletableFuture.supplyAsync(() -> {
+            // 构建上下文（会话历史）
+            List<Message> messages = session.getNodes().stream()
+                    .map(node -> new Message(node.getRole(), node.getContent()))
+                    .collect(java.util.stream.Collectors.toList());
+            
+            // 应用上下文压缩
+            messages = contextManager.compressContext(messages);
+            
+            return new AgentResponse(session, messages);
+        }).thenCompose(response -> {
+            Map<String, Object> params = new HashMap<>();
+            params.put("temperature", 0.7);
+            params.put("max_tokens", 2048);
+            
+            return llmAdapter.callAsync(response.getMessages(), params)
+                    .thenApply(llmResponse -> {
+                        response.setLLMOutput(llmResponse.getContent());
+                        response.setTokenUsage(llmResponse.getPromptTokens(), llmResponse.getCompletionTokens());
+                        return response;
+                    });
+        });
+    }
+    
+    /**
+     * Step 3: 处理工具调用
+     */
+    private CompletableFuture<AgentResponse> handleToolCallsAsync(AgentResponse response) {
+        String llmOutput = response.getLLMOutput();
+        
+        // 解析 LLM 输出中的工具调用（示例）
+        List<CompletableFuture<Void>> toolTasks = new ArrayList<>();
+        
+        // 简单示例：检查输出中是否包含工具调用标记
+        if (llmOutput.contains("TOOL:")) {
+            // 提取工具名和参数
+            String[] parts = llmOutput.split("TOOL:");
+            for (int i = 1; i < parts.length; i++) {
+                String toolCall = parts[i].split("\n")[0];
+                String[] toolParts = toolCall.split("\\|");
+                String toolName = toolParts[0].trim();
+                
+                CompletableFuture<Void> task = toolRegistry.executeAsync(toolName, new HashMap<>())
+                        .thenAccept(result -> {
+                            // 记录工具执行结果
+                            response.addToolResult(toolName, result.getOutput());
+                        });
+                
+                toolTasks.add(task);
+            }
+        }
+        
+        // 等待所有工具执行完成
+        return CompletableFuture.allOf(
+                toolTasks.toArray(new CompletableFuture[0])
+        ).thenApply(v -> response);
+    }
+    
+    /**
+     * 获取当前活跃请求数
+     */
+    public int getActiveRequests() {
+        return activeRequests.get();
+    }
+}
+
+/**
+ * Agent 响应
+ */
+public class AgentResponse {
+    private SessionTree session;
+    private List<Message> messages;
+    private String llmOutput;
+    private int promptTokens;
+    private int completionTokens;
+    private Map<String, String> toolResults;
+    
+    public AgentResponse(SessionTree session, List<Message> messages) {
+        this.session = session;
+        this.messages = messages;
+        this.toolResults = new HashMap<>();
+    }
+    
+    public SessionTree getSession() { return session; }
+    public List<Message> getMessages() { return messages; }
+    public String getLLMOutput() { return llmOutput; }
+    public void setLLMOutput(String output) { this.llmOutput = output; }
+    public void setTokenUsage(int prompt, int completion) {
+        this.promptTokens = prompt;
+        this.completionTokens = completion;
+    }
+    public int getTotalTokens() { return promptTokens + completionTokens; }
+    public void addToolResult(String toolName, String result) {
+        this.toolResults.put(toolName, result);
+    }
+}
+
+/**
+ * 上下文管理器 - 自适应上下文压缩
+ */
+public class ContextManager {
+    private static final int MAX_TOKENS = 128000;
+    private static final int RESERVE_TOKENS = 4000;
+    
+    /**
+     * 压缩会话上下文
+     */
+    public List<Message> compressContext(List<Message> messages) {
+        int totalTokens = messages.stream()
+                .mapToInt(m -> estimateTokens(m.getContent()))
+                .sum();
+        
+        if (totalTokens < MAX_TOKENS - RESERVE_TOKENS) {
+            return messages;  // 无需压缩
+        }
+        
+        // 使用策略：保留最近的消息，压缩早期对话
+        int targetTokens = MAX_TOKENS - RESERVE_TOKENS;
+        List<Message> compressed = new ArrayList<>();
+        int currentTokens = 0;
+        
+        // 从后往前添加消息
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            Message msg = messages.get(i);
+            int msgTokens = estimateTokens(msg.getContent());
+            
+            if (currentTokens + msgTokens <= targetTokens) {
+                compressed.add(0, msg);
+                currentTokens += msgTokens;
+            } else if (compressed.isEmpty()) {
+                // 至少保留最后一条
+                compressed.add(0, msg);
+                break;
+            } else {
+                break;
+            }
+        }
+        
+        return compressed;
+    }
+    
+    /**
+     * 估计 token 数（简单实现）
+     */
+    private int estimateTokens(String text) {
+        // 简单估算：1 token ≈ 4 个字符
+        return Math.max(1, text.length() / 4);
+    }
+}
+
+// ============================================================================
+// 5. 使用示例
+// ============================================================================
+
+package com.earendil.pi.example;
+
+import com.earendil.pi.agent.AgentExecutor;
+import com.earendil.pi.llm.OpenAIAdapter;
+import com.earendil.pi.session.SessionManager;
+import com.earendil.pi.tool.ToolRegistry;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.rocksdb.*;
+
+import java.util.concurrent.TimeUnit;
+
+public class PiAgentExample {
+    public static void main(String[] args) throws Exception {
+        // 初始化存储
+        RocksDB.loadLibrary();
+        RocksDB db = RocksDB.open("./rocksdb_data");
+        ObjectMapper mapper = new ObjectMapper();
+        
+        // 初始化缓存
+        Cache cache = Caffeine.newBuilder()
+                .maximumSize(1000)
+                .expireAfterWrite(10, TimeUnit.MINUTES)
+                .build();
+        
+        // 初始化 SessionManager
+        SessionManager sessionManager = new SessionManager(db, mapper, cache);
+        
+        // 初始化 ToolRegistry
+        ToolRegistry toolRegistry = new ToolRegistry();
+        // toolRegistry.register("read_file", new ReadFileTool());
+        
+        // 初始化 LLM 适配器
+        String openaiKey = System.getenv("OPENAI_API_KEY");
+        OpenAIAdapter llmAdapter = new OpenAIAdapter(openaiKey, "gpt-3.5-turbo");
+        
+        // 初始化 Agent 执行引擎
+        ContextManager contextManager = new ContextManager();
+        AgentExecutor executor = new AgentExecutor(
+                sessionManager,
+                toolRegistry,
+                llmAdapter,
+                contextManager
+        );
+        
+        // 创建会话
+        String sessionId = "session-001";
+        sessionManager.createSessionAsync(sessionId, "Test Session")
+                .thenCompose(session -> {
+                    // 执行 Agent
+                    return executor.executeAsync(sessionId, "你好，请自我介绍一下");
+                })
+                .thenAccept(response -> {
+                    System.out.println("LLM Output: " + response.getLLMOutput());
+                    System.out.println("Total Tokens: " + response.getTotalTokens());
+                })
+                .join();
+        
+        db.close();
+    }
+}
