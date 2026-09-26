@@ -1,7 +1,7 @@
 package com.earendil.pi.llm;
 
 import com.earendil.pi.internal.Asyncs;
-import com.earendil.pi.internal.Cancellation;
+import com.earendil.pi.CancellationToken;
 import com.earendil.pi.tool.Tools;
 
 import java.util.ArrayList;
@@ -60,7 +60,7 @@ public final class Llm {
     /** 供应商中立的模型客户端接口；实现方可对接 OpenAI、Claude 等，可选支持取消令牌。 */
     public interface Client {
         CompletableFuture<Response> complete(Request request);
-        default CompletableFuture<Response> complete(Request request,Cancellation cancellation){
+        default CompletableFuture<Response> complete(Request request,CancellationToken cancellation){
             return complete(request);
         }
     }
@@ -81,8 +81,8 @@ public final class Llm {
         private final RetryPolicy policy;
         private final int maxAttempts;
         private final long baseBackoffMillis,maxBackoffMillis;
-        private final java.util.concurrent.ConcurrentMap<CompletableFuture<Response>,Cancellation> pending=
-                new java.util.concurrent.ConcurrentHashMap<CompletableFuture<Response>,Cancellation>();
+        private final java.util.concurrent.ConcurrentMap<CompletableFuture<Response>,CancellationToken> pending=
+                new java.util.concurrent.ConcurrentHashMap<CompletableFuture<Response>,CancellationToken>();
         private final java.util.concurrent.atomic.AtomicBoolean closed=new java.util.concurrent.atomic.AtomicBoolean(false);
         private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t=new Thread(r,"pi-llm-retry"); t.setDaemon(true); return t;
@@ -100,8 +100,8 @@ public final class Llm {
             this.maxAttempts=maxAttempts;this.baseBackoffMillis=baseBackoffMillis;this.maxBackoffMillis=maxBackoffMillis;
         }
         public CompletableFuture<Response> complete(Request request){return complete(request,null);}
-        public CompletableFuture<Response> complete(final Request request,final Cancellation cancellation){
-            final Cancellation token=cancellation==null?Cancellation.create():Cancellation.linkedTo(cancellation);
+        public CompletableFuture<Response> complete(final Request request,final CancellationToken cancellation){
+            final CancellationToken token=cancellation==null?CancellationToken.create():CancellationToken.linkedTo(cancellation);
             final CompletableFuture<Response> result=new CompletableFuture<Response>();
             pending.put(result,token);
             result.whenComplete((response,error)->pending.remove(result));
@@ -113,7 +113,7 @@ public final class Llm {
             attempt(request,1,token,result);
             return result;
         }
-        private void attempt(final Request request,final int attempt,final Cancellation token,final CompletableFuture<Response> result){
+        private void attempt(final Request request,final int attempt,final CancellationToken token,final CompletableFuture<Response> result){
             if(result.isDone())return;
             if(closed.get()){
                 token.cancel();
@@ -148,7 +148,7 @@ public final class Llm {
             if(closed.compareAndSet(false,true)){
                 scheduler.shutdownNow();
                 CancellationException closedError=new CancellationException("retry client closed");
-                for(java.util.Map.Entry<CompletableFuture<Response>,Cancellation> waiting:pending.entrySet()){
+                for(java.util.Map.Entry<CompletableFuture<Response>,CancellationToken> waiting:pending.entrySet()){
                     waiting.getValue().cancel();
                     waiting.getKey().completeExceptionally(closedError);
                 }

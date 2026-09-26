@@ -12,14 +12,14 @@ Pi 风格 Agent 运行时核心的 JDK 8 兼容 Java 实现。
 
 | Package | 职责 |
 |---|---|
-| `com.earendil.pi` | `PiAgent` SDK 门面与可运行 Demo |
+| `com.earendil.pi` | `PiAgent` SDK 门面、可运行 Demo 与 `CancellationToken` 公共 API |
 | `com.earendil.pi.agent` | Think/Action/Tool/Observation 循环（`AgentRuntime`） |
 | `com.earendil.pi.llm` | 供应商中立的 LLM 请求/响应抽象与重试装饰器 |
 | `com.earendil.pi.tool` | 工具定义、注册表、参数校验、执行与 JDK 8 超时 |
 | `com.earendil.pi.session` | 树状内存会话与活跃路径导航 |
 | `com.earendil.pi.context` | 活跃路径的上下文组装与 token 预算裁剪 |
 | `com.earendil.pi.security` | 工具授权策略钩子 |
-| `com.earendil.pi.internal` | 运行时内部基础类（`Asyncs`、`Cancellation`），不构成对外 API |
+| `com.earendil.pi.internal` | 运行时内部基础类（`Asyncs`），不构成对外 API |
 
 依赖方向（package 级）：`internal` → `session`/`tool` → `llm` → `context`、`security` → `agent` → `PiAgent`，由 AGENTS.md 约定维护。
 

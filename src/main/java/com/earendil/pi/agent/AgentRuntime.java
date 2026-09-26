@@ -1,7 +1,7 @@
 package com.earendil.pi.agent;
 
 import com.earendil.pi.internal.Asyncs;
-import com.earendil.pi.internal.Cancellation;
+import com.earendil.pi.CancellationToken;
 import com.earendil.pi.context.Context;
 import com.earendil.pi.llm.Llm;
 import com.earendil.pi.security.Security;
@@ -54,9 +54,9 @@ public final class AgentRuntime implements AutoCloseable {
         this.sessions=sessions;this.tools=tools;this.llm=llm;this.context=context;this.policy=policy;this.config=config;
     }
 
-    public CompletableFuture<Result> run(String sessionId,String userMessage){return run(sessionId,userMessage,Cancellation.create());}
+    public CompletableFuture<Result> run(String sessionId,String userMessage){return run(sessionId,userMessage,CancellationToken.create());}
 
-    public CompletableFuture<Result> run(final String sessionId,final String userMessage,final Cancellation cancellation){
+    public CompletableFuture<Result> run(final String sessionId,final String userMessage,final CancellationToken cancellation){
         Asyncs.nonBlank(sessionId,"sessionId");
         while(true){
             CompletableFuture<Result> inFlight=activeRuns.get(sessionId);
@@ -81,17 +81,17 @@ public final class AgentRuntime implements AutoCloseable {
         }
     }
 
-    private CompletableFuture<Result> execute(final String sessionId,final String userMessage,final Cancellation cancellation){
+    private CompletableFuture<Result> execute(final String sessionId,final String userMessage,final CancellationToken cancellation){
         return sessions.getOrCreate(sessionId).thenCompose(session -> {
             session.appendUser(userMessage);
             return sessions.save(session).thenCompose(v -> loop(session,1,"",cancellation));
         });
     }
 
-    private CompletableFuture<Result> loop(final Sessions.Tree session,final int turn,final String lastText,final Cancellation cancellation){
+    private CompletableFuture<Result> loop(final Sessions.Tree session,final int turn,final String lastText,final CancellationToken cancellation){
         if(cancellation.isCancelled())return finish(session,lastText,Math.max(0,turn-1),StopReason.CANCELLED);
         if(turn>config.maxTurns)return finish(session,lastText,config.maxTurns,StopReason.MAX_TURNS);
-        final Cancellation token=Cancellation.linkedTo(cancellation);
+        final CancellationToken token=CancellationToken.linkedTo(cancellation);
         return Asyncs.withTimeout(llm.complete(context.assemble(session,tools.definitions()),token),config.llmTimeoutMillis,TimeUnit.MILLISECONDS,scheduler)
                 .whenComplete((response,error)->{
                     if(error!=null&&Asyncs.unwrap(error) instanceof java.util.concurrent.TimeoutException)token.cancel();
@@ -99,7 +99,7 @@ public final class AgentRuntime implements AutoCloseable {
                 .thenCompose(response -> handle(session,turn,response,cancellation));
     }
 
-    private CompletableFuture<Result> handle(final Sessions.Tree session,final int turn,final Llm.Response response,final Cancellation cancellation){
+    private CompletableFuture<Result> handle(final Sessions.Tree session,final int turn,final Llm.Response response,final CancellationToken cancellation){
         List<Sessions.ToolCallSnapshot> snapshots=new ArrayList<Sessions.ToolCallSnapshot>();
         for(Tools.Call c:response.getToolCalls())snapshots.add(new Sessions.ToolCallSnapshot(c.getId(),c.getName(),c.getArguments()));
         session.appendAssistant(response.getText(),snapshots);
@@ -109,7 +109,7 @@ public final class AgentRuntime implements AutoCloseable {
                 .thenCompose(v -> loop(session,turn+1,response.getText(),cancellation));
     }
 
-    private CompletableFuture<Void> executeSequential(final Sessions.Tree session,final List<Tools.Call> calls,final int index,final Cancellation cancellation){
+    private CompletableFuture<Void> executeSequential(final Sessions.Tree session,final List<Tools.Call> calls,final int index,final CancellationToken cancellation){
         if(cancellation.isCancelled()){appendSkipped(session,calls,index);return sessions.save(session);}
         if(index>=calls.size())return CompletableFuture.completedFuture(null);
         final Tools.Call call=calls.get(index);
@@ -121,7 +121,7 @@ public final class AgentRuntime implements AutoCloseable {
     }
 
     /** 执行前的整段（校验、策略、发起执行）fail closed：任何异常都归一化为配对的 error observation，绝不留下没有 tool result 的 tool call。 */
-    private CompletableFuture<Tools.Result> prepare(final Tools.Call call,final Cancellation cancellation){
+    private CompletableFuture<Tools.Result> prepare(final Tools.Call call,final CancellationToken cancellation){
         try{
             String invalid=tools.validate(call);
             if(invalid!=null)return CompletableFuture.completedFuture(new Tools.Result(call.getId(),call.getName(),invalid,true,0));

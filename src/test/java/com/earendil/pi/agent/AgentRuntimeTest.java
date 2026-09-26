@@ -1,7 +1,7 @@
 package com.earendil.pi.agent;
 
 import com.earendil.pi.internal.Asyncs;
-import com.earendil.pi.internal.Cancellation;
+import com.earendil.pi.CancellationToken;
 import com.earendil.pi.context.Context;
 import com.earendil.pi.llm.Llm;
 import com.earendil.pi.security.Security;
@@ -46,7 +46,7 @@ public class AgentRuntimeTest {
     }
 
     @Test public void cancellationMidBatchRecordsEveryToolResult(){
-        final Cancellation cancellation=Cancellation.create();
+        final CancellationToken cancellation=CancellationToken.create();
         Llm.Client llm=new Llm.FunctionalClient(request -> Llm.Response.tools("thinking",java.util.Arrays.asList(
                 Tools.Call.create("first",null),Tools.Call.create("second",null))));
         final AtomicInteger secondExecutions=new AtomicInteger();
@@ -109,10 +109,10 @@ public class AgentRuntimeTest {
     }
 
     @Test public void llmTimeoutCancelsClientToken(){
-        final java.util.List<Cancellation> seen=new java.util.ArrayList<Cancellation>();
+        final java.util.List<CancellationToken> seen=new java.util.ArrayList<CancellationToken>();
         Llm.Client hanging=new Llm.Client(){
             public CompletableFuture<Llm.Response> complete(Llm.Request request){return new CompletableFuture<Llm.Response>();}
-            public CompletableFuture<Llm.Response> complete(Llm.Request request,Cancellation cancellation){
+            public CompletableFuture<Llm.Response> complete(Llm.Request request,CancellationToken cancellation){
                 seen.add(cancellation);
                 return new CompletableFuture<Llm.Response>();
             }

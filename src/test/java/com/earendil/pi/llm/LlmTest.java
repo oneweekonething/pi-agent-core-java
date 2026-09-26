@@ -1,6 +1,6 @@
 package com.earendil.pi.llm;
 
-import com.earendil.pi.internal.Cancellation;
+import com.earendil.pi.CancellationToken;
 import com.earendil.pi.tool.Tools;
 import org.junit.Test;
 
@@ -58,7 +58,7 @@ public class LlmTest {
         final AtomicInteger attempts=new AtomicInteger();
         Llm.Client failing=new Llm.Client(){
             public CompletableFuture<Llm.Response> complete(Llm.Request request){throw new UnsupportedOperationException();}
-            public CompletableFuture<Llm.Response> complete(Llm.Request request,Cancellation cancellation){
+            public CompletableFuture<Llm.Response> complete(Llm.Request request,CancellationToken cancellation){
                 attempts.incrementAndGet();
                 if(attempts.get()==1)cancellation.cancel();
                 CompletableFuture<Llm.Response> failed=new CompletableFuture<Llm.Response>();
@@ -136,10 +136,10 @@ public class LlmTest {
     }
 
     @Test(timeout=5000) public void closeCancelsInFlightTokenAndRejectsNewCalls(){
-        final java.util.List<Cancellation> tokens=new java.util.concurrent.CopyOnWriteArrayList<Cancellation>();
+        final java.util.List<CancellationToken> tokens=new java.util.concurrent.CopyOnWriteArrayList<CancellationToken>();
         Llm.Client hanging=new Llm.Client(){
             public CompletableFuture<Llm.Response> complete(Llm.Request request){return new CompletableFuture<Llm.Response>();}
-            public CompletableFuture<Llm.Response> complete(Llm.Request request,Cancellation cancellation){
+            public CompletableFuture<Llm.Response> complete(Llm.Request request,CancellationToken cancellation){
                 tokens.add(cancellation);
                 return new CompletableFuture<Llm.Response>();
             }

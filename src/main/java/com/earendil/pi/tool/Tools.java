@@ -1,7 +1,7 @@
 package com.earendil.pi.tool;
 
 import com.earendil.pi.internal.Asyncs;
-import com.earendil.pi.internal.Cancellation;
+import com.earendil.pi.CancellationToken;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -117,7 +117,7 @@ public final class Tools {
     public interface Tool {
         Definition definition();
         CompletableFuture<Execution> execute(Map<String,Object> arguments);
-        default CompletableFuture<Execution> execute(Map<String,Object> arguments,Cancellation cancellation){
+        default CompletableFuture<Execution> execute(Map<String,Object> arguments,CancellationToken cancellation){
             return execute(arguments);
         }
     }
@@ -155,12 +155,12 @@ public final class Tools {
         public CompletableFuture<Result> execute(Call call,long timeoutMillis){
             return execute(call,timeoutMillis,null);
         }
-        public CompletableFuture<Result> execute(final Call call,long timeoutMillis,final Cancellation cancellation){
+        public CompletableFuture<Result> execute(final Call call,long timeoutMillis,final CancellationToken cancellation){
             final Tool tool=tools.get(Asyncs.require(call,"call").getName());
             if(tool==null)return CompletableFuture.completedFuture(new Result(call.getId(),call.getName(),"unknown tool: "+call.getName(),true,0));
             String invalid=Arguments.validate(tool.definition(),call.getArguments());
             if(invalid!=null)return CompletableFuture.completedFuture(new Result(call.getId(),call.getName(),invalid,true,0));
-            final Cancellation token=cancellation==null?Cancellation.create():Cancellation.linkedTo(cancellation);
+            final CancellationToken token=cancellation==null?CancellationToken.create():CancellationToken.linkedTo(cancellation);
             final long start=System.nanoTime();
             final CompletableFuture<Execution> future;
             try{future=Asyncs.require(tool.execute(call.getArguments(),token),"tool future");}

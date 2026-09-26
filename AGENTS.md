@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Pi Agent Core Java 是最小 Agent 循环（Think -> Action -> Tool -> Observation）的 JDK 8 兼容 Maven 多模块实现。
+Pi Agent Core Java 是最小 Agent 循环（Think -> Action -> Tool -> Observation）的 JDK 8 兼容单模块实现。
 
 ## 始终适用
 
@@ -10,7 +10,7 @@ Pi Agent Core Java 是最小 Agent 循环（Think -> Action -> Tool -> Observati
 - 完整兼容性验证：`mvn -q verify`
 - Java 语言特性与 Java 运行时 API 都必须保持 JDK 8 兼容。不要使用 Java 8 之后引入的 API（例如 `CompletableFuture.orTimeout`、`List.of`、`record`、`var`）。
 - 保持运行时顺序 `LLM -> tool calls -> tool results -> LLM`；工具失败是返回给模型的 observation，而不是未捕获的控制流异常。
-- 保持 package 依赖无环且方向指向更低层的包：`internal` → `session`/`tool` → `llm` → `context`、`security` → `agent` → `PiAgent`（根包）。架构边界由 package 与本文档约定维护，不再使用多 Maven module 强制。
+- 保持 package 依赖无环且方向指向更低层的包：`internal` → `session`/`tool` → `llm` → `context`、`security` → `agent` → `PiAgent`（根包）。根包的 `CancellationToken` 是公共 API，可供各层使用；除此之外低层包不得引用 `PiAgent` 或 `agent`。架构边界由 package、`ArchitectureTest` 与本文档约定维护，不再使用多 Maven module 强制。
 - Research in English, respond in Chinese.（资料检索与代码调研用英文，对用户的回复用中文。）
 
 ## 仅在相关时阅读

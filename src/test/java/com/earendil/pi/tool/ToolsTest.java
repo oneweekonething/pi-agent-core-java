@@ -1,6 +1,6 @@
 package com.earendil.pi.tool;
 
-import com.earendil.pi.internal.Cancellation;
+import com.earendil.pi.CancellationToken;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -27,11 +27,11 @@ public class ToolsTest {
     }
 
     @Test public void timeoutCancelsToolToken(){
-        final List<Cancellation> seen=new ArrayList<Cancellation>();
+        final List<CancellationToken> seen=new ArrayList<CancellationToken>();
         Tools.Tool never=new Tools.Tool(){
             public Tools.Definition definition(){return new Tools.Definition("never","never",Collections.<Tools.Parameter>emptyList());}
             public CompletableFuture<Tools.Execution> execute(Map<String,Object> arguments){return new CompletableFuture<Tools.Execution>();}
-            public CompletableFuture<Tools.Execution> execute(Map<String,Object> arguments,Cancellation cancellation){
+            public CompletableFuture<Tools.Execution> execute(Map<String,Object> arguments,CancellationToken cancellation){
                 seen.add(cancellation);
                 return new CompletableFuture<Tools.Execution>();
             }
@@ -48,13 +48,13 @@ public class ToolsTest {
         Tools.Tool probe=new Tools.Tool(){
             public Tools.Definition definition(){return new Tools.Definition("probe","probe",Collections.<Tools.Parameter>emptyList());}
             public CompletableFuture<Tools.Execution> execute(Map<String,Object> arguments){return CompletableFuture.completedFuture(Tools.Execution.ok("unaware"));}
-            public CompletableFuture<Tools.Execution> execute(Map<String,Object> arguments,Cancellation cancellation){
+            public CompletableFuture<Tools.Execution> execute(Map<String,Object> arguments,CancellationToken cancellation){
                 return CompletableFuture.completedFuture(Tools.Execution.ok(cancellation.isCancelled()?"aware":"unaware"));
             }
         };
         try(Tools.Registry registry=new Tools.Registry()){
             registry.register(probe);
-            Cancellation parent=Cancellation.create();
+            CancellationToken parent=CancellationToken.create();
             parent.cancel();
             Tools.Result result=registry.execute(Tools.Call.create("probe",null),1000,parent).join();
             assertEquals("aware",result.getContent());
