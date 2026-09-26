@@ -17,7 +17,7 @@ user message
 
 规则：
 
-- 持久化 assistant 的 tool-call 消息必须先于它的工具结果，不得跳过。
+- 持久化 assistant 的 tool-call 消息必须先于它的工具结果，不得跳过。持久化是逐步的：user 追加后 save、assistant 追加后 save（先于任何工具执行）、每个 tool result 追加后 save、取消补齐的 skipped 结果同样 save。当前 Repository SPI 不提供 exactly-once；逐步 save 只是把崩溃后的重放窗口缩到单次调用。
 - 同一个模型响应里的 tool calls 默认顺序执行。这保留了 observation 顺序的确定性。
 - 被拒绝、未知、超时或失败的工具仍会产生 `error=true` 的 `TOOL_RESULT` 节点。
 - 工具调用先解析工具并校验参数（`Tools.Registry.validate`），再交给 `Security.Policy` 评估——策略只会看到已通过校验的参数。校验失败直接产生 error observation，既不进入策略也不执行工具。

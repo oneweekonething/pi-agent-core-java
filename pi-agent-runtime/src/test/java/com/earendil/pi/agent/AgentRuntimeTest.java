@@ -125,6 +125,41 @@ public class AgentRuntimeTest {
         }
     }
 
+    @Test public void persistsAssistantBeforeToolAndEachResultAfter(){
+        final java.util.List<Integer> saveSizes=new java.util.ArrayList<Integer>();
+        final java.util.concurrent.atomic.AtomicInteger savesWhenToolRan=new java.util.concurrent.atomic.AtomicInteger(-1);
+        Sessions.Repository recording=new Sessions.Repository(){
+            private final java.util.concurrent.ConcurrentMap<String,Sessions.Tree> data=new java.util.concurrent.ConcurrentHashMap<String,Sessions.Tree>();
+            public CompletableFuture<java.util.Optional<Sessions.Tree>> find(String id){
+                return CompletableFuture.completedFuture(java.util.Optional.ofNullable(data.get(id)));
+            }
+            public CompletableFuture<Void> save(Sessions.Tree tree){
+                data.put(tree.getId(),tree);
+                saveSizes.add(tree.allNodes().size());
+                return CompletableFuture.completedFuture(null);
+            }
+        };
+        AtomicInteger turns=new AtomicInteger();
+        Llm.Client llm=new Llm.FunctionalClient(request -> {
+            if(turns.getAndIncrement()==0)return Llm.Response.tools("thinking",Collections.singletonList(Tools.Call.create("echo",Collections.<String,Object>singletonMap("text","ok"))));
+            return Llm.Response.answer("done");
+        });
+        Tools.Tool echo=new Tools.Tool(){
+            public Tools.Definition definition(){return new Tools.Definition("echo","echo",Collections.<Tools.Parameter>emptyList());}
+            public CompletableFuture<Tools.Execution> execute(Map<String,Object> args){
+                savesWhenToolRan.set(saveSizes.size());
+                return CompletableFuture.completedFuture(Tools.Execution.ok("ok"));
+            }
+        };
+        Sessions.Manager sessions=new Sessions.Manager(recording);
+        try(Tools.Registry registry=new Tools.Registry();AgentRuntime runtime=new AgentRuntime(sessions,registry,llm,new Context.Assembler(Context.Config.defaults()),new Security.AllowAll(),new AgentRuntime.Config(4,1000))){
+            registry.register(echo);
+            assertEquals(AgentRuntime.StopReason.COMPLETED,runtime.run("s","go").join().getReason());
+        }
+        assertEquals(java.util.Arrays.asList(0,1,2,3,4),saveSizes);
+        assertTrue("tool must run only after the assistant node is persisted, saw "+savesWhenToolRan.get(),savesWhenToolRan.get()>=3);
+    }
+
     @Test public void policySeesOnlyValidatedArguments(){
         final AtomicInteger policyEvaluations=new AtomicInteger();
         com.earendil.pi.security.Security.Policy casting=new com.earendil.pi.security.Security.Policy(){

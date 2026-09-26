@@ -116,4 +116,22 @@ public class LlmTest {
             client.close();
         }
     }
+
+    @Test(timeout=5000) public void closeDuringBackoffCompletesPending(){
+        final AtomicInteger attempts=new AtomicInteger();
+        Llm.Client failing=new Llm.Client(){
+            public CompletableFuture<Llm.Response> complete(Llm.Request request){
+                attempts.incrementAndGet();
+                CompletableFuture<Llm.Response> failed=new CompletableFuture<Llm.Response>();
+                failed.completeExceptionally(new IllegalStateException("down"));
+                return failed;
+            }
+        };
+        Llm.RetryClient client=new Llm.RetryClient(failing,10,5000,10000);
+        CompletableFuture<Llm.Response> pendingCall=client.complete(request());
+        client.close();
+        Throwable error=pendingCall.handle((r,e)->e).join();
+        assertTrue(error instanceof CancellationException);
+        assertEquals(1,attempts.get());
+    }
 }

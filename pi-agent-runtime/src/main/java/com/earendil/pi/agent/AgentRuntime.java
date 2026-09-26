@@ -104,13 +104,13 @@ public final class AgentRuntime implements AutoCloseable {
         for(Tools.Call c:response.getToolCalls())snapshots.add(new Sessions.ToolCallSnapshot(c.getId(),c.getName(),c.getArguments()));
         session.appendAssistant(response.getText(),snapshots);
         if(response.getToolCalls().isEmpty())return finish(session,response.getText(),turn,StopReason.COMPLETED);
-        return executeSequential(session,response.getToolCalls(),0,cancellation)
-                .thenCompose(v -> sessions.save(session))
+        return sessions.save(session)
+                .thenCompose(v -> executeSequential(session,response.getToolCalls(),0,cancellation))
                 .thenCompose(v -> loop(session,turn+1,response.getText(),cancellation));
     }
 
     private CompletableFuture<Void> executeSequential(final Sessions.Tree session,final List<Tools.Call> calls,final int index,final Cancellation cancellation){
-        if(cancellation.isCancelled()){appendSkipped(session,calls,index);return CompletableFuture.completedFuture(null);}
+        if(cancellation.isCancelled()){appendSkipped(session,calls,index);return sessions.save(session);}
         if(index>=calls.size())return CompletableFuture.completedFuture(null);
         final Tools.Call call=calls.get(index);
         String invalid=tools.validate(call);
@@ -125,7 +125,8 @@ public final class AgentRuntime implements AutoCloseable {
         }
         return future.thenCompose(result -> {
             session.appendTool(result.getCallId(),result.getToolName(),result.getContent(),result.isError());
-            return executeSequential(session,calls,index+1,cancellation);
+            return sessions.save(session)
+                    .thenCompose(v -> executeSequential(session,calls,index+1,cancellation));
         });
     }
 

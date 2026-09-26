@@ -81,6 +81,9 @@ public final class Llm {
         private final RetryPolicy policy;
         private final int maxAttempts;
         private final long baseBackoffMillis,maxBackoffMillis;
+        private final java.util.Set<CompletableFuture<Response>> pending=
+                java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<CompletableFuture<Response>,Boolean>());
+        private final java.util.concurrent.atomic.AtomicBoolean closed=new java.util.concurrent.atomic.AtomicBoolean(false);
         private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t=new Thread(r,"pi-llm-retry"); t.setDaemon(true); return t;
         });
@@ -100,6 +103,12 @@ public final class Llm {
         public CompletableFuture<Response> complete(final Request request,final Cancellation cancellation){
             final Cancellation token=cancellation==null?Cancellation.create():Cancellation.linkedTo(cancellation);
             final CompletableFuture<Response> result=new CompletableFuture<Response>();
+            if(closed.get()){
+                result.completeExceptionally(new CancellationException("retry client closed"));
+                return result;
+            }
+            pending.add(result);
+            result.whenComplete((response,error)->pending.remove(result));
             attempt(request,1,token,result);
             return result;
         }
@@ -129,6 +138,12 @@ public final class Llm {
             for(int i=1;i<attempt&&backoff<maxBackoffMillis;i++)backoff=Math.min(maxBackoffMillis,backoff*2);
             return backoff+ThreadLocalRandom.current().nextLong(backoff/2+1);
         }
-        public void close(){scheduler.shutdownNow();}
+        public void close(){
+            if(closed.compareAndSet(false,true)){
+                scheduler.shutdownNow();
+                CancellationException closedError=new CancellationException("retry client closed");
+                for(CompletableFuture<Response> waiting:pending)waiting.completeExceptionally(closedError);
+            }
+        }
     }
 }
