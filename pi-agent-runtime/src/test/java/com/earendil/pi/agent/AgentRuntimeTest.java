@@ -91,4 +91,37 @@ public class AgentRuntimeTest {
             assertTrue(Asyncs.unwrap(error) instanceof TimeoutException);
         }
     }
+
+    @Test public void concurrentRunOnSameSessionIsRejected(){
+        final CompletableFuture<Llm.Response> gate=new CompletableFuture<Llm.Response>();
+        Llm.Client gated=new Llm.Client(){
+            public CompletableFuture<Llm.Response> complete(Llm.Request request){return gate;}
+        };
+        Sessions.Manager sessions=new Sessions.Manager(new Sessions.InMemoryRepository());
+        try(Tools.Registry registry=new Tools.Registry();AgentRuntime runtime=new AgentRuntime(sessions,registry,gated,new Context.Assembler(Context.Config.defaults()),new Security.AllowAll(),new AgentRuntime.Config(4,1000))){
+            CompletableFuture<AgentRuntime.Result> first=runtime.run("s","one");
+            Throwable rejection=runtime.run("s","two").handle((r,e)->e).join();
+            assertTrue(rejection instanceof IllegalStateException);
+            gate.complete(Llm.Response.answer("done"));
+            assertEquals(AgentRuntime.StopReason.COMPLETED,first.join().getReason());
+            assertEquals(AgentRuntime.StopReason.COMPLETED,runtime.run("s","three").join().getReason());
+        }
+    }
+
+    @Test public void llmTimeoutCancelsClientToken(){
+        final java.util.List<Cancellation> seen=new java.util.ArrayList<Cancellation>();
+        Llm.Client hanging=new Llm.Client(){
+            public CompletableFuture<Llm.Response> complete(Llm.Request request){return new CompletableFuture<Llm.Response>();}
+            public CompletableFuture<Llm.Response> complete(Llm.Request request,Cancellation cancellation){
+                seen.add(cancellation);
+                return new CompletableFuture<Llm.Response>();
+            }
+        };
+        Sessions.Manager sessions=new Sessions.Manager(new Sessions.InMemoryRepository());
+        try(Tools.Registry registry=new Tools.Registry();AgentRuntime runtime=new AgentRuntime(sessions,registry,hanging,new Context.Assembler(Context.Config.defaults()),new Security.AllowAll(),new AgentRuntime.Config(4,1000,150))){
+            runtime.run("s","go").handle((r,e)->e).join();
+            assertEquals(1,seen.size());
+            assertTrue(seen.get(0).isCancelled());
+        }
+    }
 }

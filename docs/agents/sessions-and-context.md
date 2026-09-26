@@ -11,6 +11,6 @@ Rules:
 - Assistant nodes store structured tool-call snapshots.
 - Tool-result nodes store `toolCallId`, tool name, error status, and observation content.
 - Context assembly must preserve assistant-tool-call -> tool-result ordering.
-- Budget trimming removes oldest messages first and always keeps at least the newest message.
-- `Manager.getOrCreate` is atomic per session id (per-id lock), so concurrent runs cannot create two trees for the same id.
+- Budget trimming removes oldest messages first and always keeps at least the newest message. Estimates include tool-call arguments and tool parameter schemas, not just message text.
+- `Manager.getOrCreate` deduplicates in-flight creations per session id through a shared future, so concurrent callers on an async repository get the same tree instead of two creations. Cross-manager or cross-process duplicate creation still needs repository-level atomicity.
 - Token estimation is intentionally heuristic in core. Provider-specific tokenizers belong in adapter implementations.

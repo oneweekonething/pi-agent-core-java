@@ -1,11 +1,13 @@
 package com.earendil.pi.llm;
 
 import com.earendil.pi.common.Asyncs;
+import com.earendil.pi.common.Cancellation;
 import com.earendil.pi.tool.Tools;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -53,7 +55,12 @@ public final class Llm {
         public String getText(){return text;} public List<Tools.Call> getToolCalls(){return calls;}
     }
 
-    public interface Client { CompletableFuture<Response> complete(Request request); }
+    public interface Client {
+        CompletableFuture<Response> complete(Request request);
+        default CompletableFuture<Response> complete(Request request,Cancellation cancellation){
+            return complete(request);
+        }
+    }
 
     public static final class FunctionalClient implements Client {
         private final Function<Request,Response> function;
@@ -65,33 +72,47 @@ public final class Llm {
     }
 
     public static final class RetryClient implements Client {
+        public interface RetryPolicy { boolean shouldRetry(Throwable error); }
         private final Client delegate;
+        private final RetryPolicy policy;
         private final int maxAttempts;
         private final long baseBackoffMillis,maxBackoffMillis;
         private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t=new Thread(r,"pi-llm-retry"); t.setDaemon(true); return t;
         });
         public RetryClient(Client delegate,int maxAttempts,long baseBackoffMillis,long maxBackoffMillis){
+            this(delegate,maxAttempts,baseBackoffMillis,maxBackoffMillis,new RetryPolicy(){
+                public boolean shouldRetry(Throwable error){return true;}
+            });
+        }
+        public RetryClient(Client delegate,int maxAttempts,long baseBackoffMillis,long maxBackoffMillis,RetryPolicy policy){
             this.delegate=Asyncs.require(delegate,"delegate");
+            this.policy=Asyncs.require(policy,"policy");
             if(maxAttempts<1)throw new IllegalArgumentException("maxAttempts must be >= 1");
             if(baseBackoffMillis<=0||maxBackoffMillis<baseBackoffMillis)throw new IllegalArgumentException("invalid backoff config");
             this.maxAttempts=maxAttempts;this.baseBackoffMillis=baseBackoffMillis;this.maxBackoffMillis=maxBackoffMillis;
         }
-        public CompletableFuture<Response> complete(final Request request){
+        public CompletableFuture<Response> complete(Request request){return complete(request,null);}
+        public CompletableFuture<Response> complete(final Request request,final Cancellation cancellation){
+            final Cancellation token=cancellation==null?Cancellation.create():Cancellation.linkedTo(cancellation);
             final CompletableFuture<Response> result=new CompletableFuture<Response>();
-            attempt(request,1,result);
+            attempt(request,1,token,result);
             return result;
         }
-        private void attempt(final Request request,final int attempt,final CompletableFuture<Response> result){
+        private void attempt(final Request request,final int attempt,final Cancellation token,final CompletableFuture<Response> result){
             if(result.isDone())return;
+            if(token.isCancelled()){result.completeExceptionally(new CancellationException("llm call cancelled"));return;}
             CompletableFuture<Response> call;
-            try{call=Asyncs.require(delegate.complete(request),"delegate future");}
+            try{call=Asyncs.require(delegate.complete(request,token),"delegate future");}
             catch(Throwable e){call=new CompletableFuture<Response>();call.completeExceptionally(e);}
             call.whenComplete((response,error)->{
                 if(error==null){result.complete(response);return;}
-                if(attempt>=maxAttempts){result.completeExceptionally(Asyncs.unwrap(error));return;}
+                if(token.isCancelled()){result.completeExceptionally(new CancellationException("llm call cancelled"));return;}
+                if(attempt>=maxAttempts||!policy.shouldRetry(Asyncs.unwrap(error))){
+                    result.completeExceptionally(Asyncs.unwrap(error));return;
+                }
                 scheduler.schedule(new Runnable(){
-                    public void run(){attempt(request,attempt+1,result);}
+                    public void run(){attempt(request,attempt+1,token,result);}
                 },delayFor(attempt),TimeUnit.MILLISECONDS);
             });
         }

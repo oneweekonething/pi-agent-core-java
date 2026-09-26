@@ -1,9 +1,11 @@
 package com.earendil.pi.llm;
 
+import com.earendil.pi.common.Cancellation;
 import com.earendil.pi.tool.Tools;
 import org.junit.Test;
 
 import java.util.Collections;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -50,5 +52,49 @@ public class LlmTest {
             client.close();
         }
         assertEquals(2,attempts.get());
+    }
+
+    @Test public void cancelledTokenStopsRetries(){
+        final AtomicInteger attempts=new AtomicInteger();
+        Llm.Client failing=new Llm.Client(){
+            public CompletableFuture<Llm.Response> complete(Llm.Request request){throw new UnsupportedOperationException();}
+            public CompletableFuture<Llm.Response> complete(Llm.Request request,Cancellation cancellation){
+                attempts.incrementAndGet();
+                if(attempts.get()==1)cancellation.cancel();
+                CompletableFuture<Llm.Response> failed=new CompletableFuture<Llm.Response>();
+                failed.completeExceptionally(new IllegalStateException("down"));
+                return failed;
+            }
+        };
+        Llm.RetryClient client=new Llm.RetryClient(failing,5,1,8);
+        try{
+            Throwable error=client.complete(request()).handle((r,e)->e).join();
+            assertTrue(error instanceof CancellationException);
+        } finally {
+            client.close();
+        }
+        assertEquals(1,attempts.get());
+    }
+
+    @Test public void policyCanRejectRetries(){
+        final AtomicInteger attempts=new AtomicInteger();
+        Llm.Client failing=new Llm.Client(){
+            public CompletableFuture<Llm.Response> complete(Llm.Request request){
+                attempts.incrementAndGet();
+                CompletableFuture<Llm.Response> failed=new CompletableFuture<Llm.Response>();
+                failed.completeExceptionally(new IllegalStateException("permanent"));
+                return failed;
+            }
+        };
+        Llm.RetryClient client=new Llm.RetryClient(failing,5,1,8,new Llm.RetryClient.RetryPolicy(){
+            public boolean shouldRetry(Throwable error){return false;}
+        });
+        try{
+            Throwable error=client.complete(request()).handle((r,e)->e).join();
+            assertTrue(error instanceof IllegalStateException);
+        } finally {
+            client.close();
+        }
+        assertEquals(1,attempts.get());
     }
 }

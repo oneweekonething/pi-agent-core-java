@@ -22,6 +22,7 @@ Rules:
 - A denied, unknown, timed-out, or failed tool still produces a `TOOL_RESULT` node with `error=true`.
 - Do not automatically retry arbitrary tools; retries can duplicate side effects. Add retry policy only when tool idempotency is explicit.
 - `maxTurns` limits model turns, not individual tool calls.
+- Only one run may be active per session id. A second concurrent `run` on the same session fails fast with `IllegalStateException` instead of interleaving appends into the session tree.
 - Cancellation is cooperative. Stop before starting the next model/tool operation; do not use `Thread.stop()` or similar unsafe interruption.
 - Tool calls skipped because of cancellation still get `TOOL_RESULT` nodes with `error=true` (`tool call cancelled before execution`), so a persisted assistant tool-call message is never left without matching tool results.
-- Each model call is raced against `Config.llmTimeoutMillis`; a model timeout fails the run. Transient LLM failures are the client's concern (wrap the client in `Llm.RetryClient` for backoff with jitter).
+- Each model call receives a cancellation token linked to the run token and is raced against `Config.llmTimeoutMillis`; the timeout cancels the token so clients that honor it (like `Llm.RetryClient`) stop scheduling new attempts, and a model timeout fails the run.

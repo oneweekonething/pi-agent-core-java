@@ -61,6 +61,27 @@ public class ToolsTest {
         }
     }
 
+    @Test public void invalidArgumentsBecomeObservationsWithoutExecuting(){
+        final java.util.concurrent.atomic.AtomicInteger executions=new java.util.concurrent.atomic.AtomicInteger();
+        Tools.Tool gated=new Tools.Tool(){
+            public Tools.Definition definition(){return new Tools.Definition("gated","gated",Collections.singletonList(new Tools.Parameter("path","p",true)));}
+            public CompletableFuture<Tools.Execution> execute(Map<String,Object> arguments){executions.incrementAndGet();return CompletableFuture.completedFuture(Tools.Execution.ok("ran"));}
+        };
+        try(Tools.Registry registry=new Tools.Registry()){
+            registry.register(gated);
+            Tools.Result missing=registry.execute(Tools.Call.create("gated",null),1000).join();
+            assertTrue(missing.isError());
+            assertTrue(missing.getContent().contains("missing required argument: path"));
+            Tools.Result wrongType=registry.execute(Tools.Call.create("gated",Collections.<String,Object>singletonMap("path",5)),1000).join();
+            assertTrue(wrongType.isError());
+            assertTrue(wrongType.getContent().contains("expected string"));
+            assertEquals(0,executions.get());
+            Tools.Result valid=registry.execute(Tools.Call.create("gated",Collections.<String,Object>singletonMap("path","a")),1000).join();
+            assertTrue(!valid.isError());
+            assertEquals(1,executions.get());
+        }
+    }
+
     @Test public void oversizedResultTruncated(){
         Tools.Tool chatty=new Tools.Tool(){
             public Tools.Definition definition(){return new Tools.Definition("chatty","chatty",Collections.<Tools.Parameter>emptyList());}

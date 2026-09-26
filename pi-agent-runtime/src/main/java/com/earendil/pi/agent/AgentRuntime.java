@@ -11,6 +11,8 @@ import com.earendil.pi.tool.Tools;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -40,6 +42,7 @@ public final class AgentRuntime implements AutoCloseable {
     private final Context.Assembler context;
     private final Security.Policy policy;
     private final Config config;
+    private final ConcurrentMap<String,CompletableFuture<Result>> activeRuns=new ConcurrentHashMap<String,CompletableFuture<Result>>();
     private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t=new Thread(r,"pi-llm-timeout"); t.setDaemon(true); return t;
     });
@@ -51,6 +54,27 @@ public final class AgentRuntime implements AutoCloseable {
     public CompletableFuture<Result> run(String sessionId,String userMessage){return run(sessionId,userMessage,Cancellation.create());}
 
     public CompletableFuture<Result> run(final String sessionId,final String userMessage,final Cancellation cancellation){
+        Asyncs.nonBlank(sessionId,"sessionId");
+        while(true){
+            CompletableFuture<Result> inFlight=activeRuns.get(sessionId);
+            if(inFlight!=null&&!inFlight.isDone()){
+                CompletableFuture<Result> rejected=new CompletableFuture<Result>();
+                rejected.completeExceptionally(new IllegalStateException("agent is already processing a prompt for session "+sessionId));
+                return rejected;
+            }
+            if(inFlight!=null)activeRuns.remove(sessionId,inFlight);
+            final CompletableFuture<Result> created=new CompletableFuture<Result>();
+            if(activeRuns.putIfAbsent(sessionId,created)!=null)continue;
+            created.whenComplete((result,error)->activeRuns.remove(sessionId,created));
+            execute(sessionId,userMessage,cancellation).whenComplete((result,error)->{
+                if(error!=null)created.completeExceptionally(error);
+                else created.complete(result);
+            });
+            return created;
+        }
+    }
+
+    private CompletableFuture<Result> execute(final String sessionId,final String userMessage,final Cancellation cancellation){
         return sessions.getOrCreate(sessionId).thenCompose(session -> {
             session.appendUser(userMessage);
             return sessions.save(session).thenCompose(v -> loop(session,1,"",cancellation));
@@ -60,7 +84,11 @@ public final class AgentRuntime implements AutoCloseable {
     private CompletableFuture<Result> loop(final Sessions.Tree session,final int turn,final String lastText,final Cancellation cancellation){
         if(cancellation.isCancelled())return finish(session,lastText,Math.max(0,turn-1),StopReason.CANCELLED);
         if(turn>config.maxTurns)return finish(session,lastText,config.maxTurns,StopReason.MAX_TURNS);
-        return Asyncs.withTimeout(llm.complete(context.assemble(session,tools.definitions())),config.llmTimeoutMillis,TimeUnit.MILLISECONDS,scheduler)
+        final Cancellation token=Cancellation.linkedTo(cancellation);
+        return Asyncs.withTimeout(llm.complete(context.assemble(session,tools.definitions()),token),config.llmTimeoutMillis,TimeUnit.MILLISECONDS,scheduler)
+                .whenComplete((response,error)->{
+                    if(error!=null&&Asyncs.unwrap(error) instanceof java.util.concurrent.TimeoutException)token.cancel();
+                })
                 .thenCompose(response -> handle(session,turn,response,cancellation));
     }
 

@@ -9,6 +9,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 public final class Context {
     private Context() {}
@@ -44,7 +45,7 @@ public final class Context {
             if(messages.isEmpty())return Collections.emptyList();
             int start=messages.size()-1,used=0;
             for(int i=messages.size()-1;i>=0;i--){
-                int cost=estimate(messages.get(i).getContent())+8;
+                int cost=estimate(messages.get(i));
                 if(i<messages.size()-1&&used+cost>budget){start=i+1;break;}
                 used+=cost;start=i;
             }
@@ -54,7 +55,34 @@ public final class Context {
             }
             return new ArrayList<Llm.Message>(messages.subList(start,messages.size()));
         }
-        private int estimateTools(Collection<Tools.Definition> defs){int n=0;for(Tools.Definition d:defs)n+=estimate(d.getName())+estimate(d.getDescription())+16;return n;}
+        private int estimate(Llm.Message message){
+            int n=estimate(message.getContent())+8;
+            for(Tools.Call call:message.getToolCalls())n+=estimate(call.getName())+estimateValue(call.getArguments())+8;
+            return n;
+        }
+        private int estimateValue(Object value){
+            if(value==null)return 4;
+            if(value instanceof Map){
+                int n=2;
+                for(Map.Entry<?,?> entry:((Map<?,?>)value).entrySet())n+=estimate(String.valueOf(entry.getKey()))+estimateValue(entry.getValue())+4;
+                return n;
+            }
+            if(value instanceof List){
+                int n=2;
+                for(Object item:(List<?>)value)n+=estimateValue(item)+2;
+                return n;
+            }
+            if(value instanceof Number||value instanceof Boolean)return 8;
+            return estimate(String.valueOf(value));
+        }
+        private int estimateTools(Collection<Tools.Definition> defs){
+            int n=0;
+            for(Tools.Definition d:defs){
+                n+=estimate(d.getName())+estimate(d.getDescription())+16;
+                for(Tools.Parameter p:d.getParameters())n+=estimate(p.getName())+estimate(p.getDescription())+16;
+            }
+            return n;
+        }
         private int estimate(String s){return s==null||s.isEmpty()?0:Math.max(1,(s.length()+3)/4);}
     }
 }

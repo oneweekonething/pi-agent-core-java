@@ -21,13 +21,19 @@ import java.util.concurrent.TimeoutException;
 public final class Tools {
     private Tools() {}
 
+    public enum ParameterType { STRING, NUMBER, INTEGER, BOOLEAN, OBJECT, ARRAY }
+
     public static final class Parameter {
         private final String name,description;
         private final boolean required;
-        public Parameter(String name,String description,boolean required){
+        private final ParameterType type;
+        public Parameter(String name,String description,boolean required){this(name,description,required,ParameterType.STRING);}
+        public Parameter(String name,String description,boolean required,ParameterType type){
             this.name=Asyncs.nonBlank(name,"name");this.description=description==null?"":description;this.required=required;
+            this.type=Asyncs.require(type,"type");
         }
         public String getName(){return name;} public String getDescription(){return description;} public boolean isRequired(){return required;}
+        public ParameterType getType(){return type;}
     }
 
     public static final class Definition {
@@ -68,6 +74,40 @@ public final class Tools {
         public boolean isError(){return error;} public long getDurationMillis(){return durationMillis;}
     }
 
+    public static final class Arguments {
+        private Arguments() {}
+        public static String validate(Definition definition,Map<String,Object> arguments){
+            Map<String,Object> safe=arguments==null?Collections.<String,Object>emptyMap():arguments;
+            for(Parameter parameter:definition.getParameters()){
+                if(!safe.containsKey(parameter.getName())||safe.get(parameter.getName())==null){
+                    if(parameter.isRequired())return "missing required argument: "+parameter.getName();
+                    continue;
+                }
+                String mismatch=mismatch(safe.get(parameter.getName()),parameter.getType());
+                if(mismatch!=null)return "argument "+parameter.getName()+" "+mismatch;
+            }
+            return null;
+        }
+        private static String mismatch(Object value,ParameterType type){
+            switch(type){
+                case STRING:return value instanceof String?null:"expected string";
+                case NUMBER:return value instanceof Number?null:"expected number";
+                case INTEGER:{
+                    if(value instanceof Integer||value instanceof Long)return null;
+                    if(value instanceof Number){
+                        double d=((Number)value).doubleValue();
+                        return d==Math.floor(d)?null:"expected integer";
+                    }
+                    return "expected integer";
+                }
+                case BOOLEAN:return value instanceof Boolean?null:"expected boolean";
+                case OBJECT:return value instanceof Map?null:"expected object";
+                case ARRAY:return value instanceof List?null:"expected array";
+                default:return null;
+            }
+        }
+    }
+
     public interface Tool {
         Definition definition();
         CompletableFuture<Execution> execute(Map<String,Object> arguments);
@@ -105,6 +145,8 @@ public final class Tools {
         public CompletableFuture<Result> execute(final Call call,long timeoutMillis,final Cancellation cancellation){
             final Tool tool=tools.get(Asyncs.require(call,"call").getName());
             if(tool==null)return CompletableFuture.completedFuture(new Result(call.getId(),call.getName(),"unknown tool: "+call.getName(),true,0));
+            String invalid=Arguments.validate(tool.definition(),call.getArguments());
+            if(invalid!=null)return CompletableFuture.completedFuture(new Result(call.getId(),call.getName(),invalid,true,0));
             final Cancellation token=cancellation==null?Cancellation.create():Cancellation.linkedTo(cancellation);
             final long start=System.nanoTime();
             final CompletableFuture<Execution> future;

@@ -21,6 +21,7 @@ Error rules:
 
 Cancellation and result size:
 
+- Arguments are validated against the definition before execution (`Tools.Arguments.validate`): a missing required parameter or a parameter type mismatch (`ParameterType`) becomes an error observation and the tool is never invoked.
 - Tools that poll for cancellation override `execute(arguments, Cancellation)`. The registry passes a token linked to the run-level token and cancels it when the tool times out, so long-running work can stop itself.
 - Tool result content larger than the registry's `maxResultChars` (default 16384) is truncated with a `...[truncated N chars]` marker before it becomes an observation.
 
