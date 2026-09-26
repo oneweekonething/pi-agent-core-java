@@ -7,12 +7,16 @@ import com.earendil.pi.tool.Tools;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 /** LLM 领域类型：供应商中立的请求/响应/消息抽象，以及客户端接口与重试装饰器。 */
@@ -81,9 +85,8 @@ public final class Llm {
         private final RetryPolicy policy;
         private final int maxAttempts;
         private final long baseBackoffMillis,maxBackoffMillis;
-        private final java.util.concurrent.ConcurrentMap<CompletableFuture<Response>,CancellationToken> pending=
-                new java.util.concurrent.ConcurrentHashMap<CompletableFuture<Response>,CancellationToken>();
-        private final java.util.concurrent.atomic.AtomicBoolean closed=new java.util.concurrent.atomic.AtomicBoolean(false);
+        private final ConcurrentMap<CompletableFuture<Response>,CancellationToken> pending=new ConcurrentHashMap<>();
+        private final AtomicBoolean closed=new AtomicBoolean(false);
         private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t=new Thread(r,"pi-llm-retry"); t.setDaemon(true); return t;
         });
@@ -131,9 +134,9 @@ public final class Llm {
                     if(attempt>=maxAttempts||!policy.shouldRetry(Asyncs.unwrap(error))){
                         result.completeExceptionally(Asyncs.unwrap(error));return;
                     }
-                    scheduler.schedule(new Runnable(){
-                        public void run(){attempt(request,attempt+1,token,result);}
-                    },delayFor(attempt),TimeUnit.MILLISECONDS);
+                    scheduler.schedule(
+                            () -> attempt(request,attempt+1,token,result),
+                            delayFor(attempt),TimeUnit.MILLISECONDS);
                 }catch(Throwable callbackError){
                     result.completeExceptionally(Asyncs.unwrap(callbackError));
                 }
@@ -148,7 +151,7 @@ public final class Llm {
             if(closed.compareAndSet(false,true)){
                 scheduler.shutdownNow();
                 CancellationException closedError=new CancellationException("retry client closed");
-                for(java.util.Map.Entry<CompletableFuture<Response>,CancellationToken> waiting:pending.entrySet()){
+                for(Map.Entry<CompletableFuture<Response>,CancellationToken> waiting:pending.entrySet()){
                     waiting.getValue().cancel();
                     waiting.getKey().completeExceptionally(closedError);
                 }

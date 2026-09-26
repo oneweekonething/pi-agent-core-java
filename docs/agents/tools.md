@@ -9,7 +9,7 @@
 - `Tools.Call`：模型选定的 call id、名称、参数。
 - `Tools.Result`：归一化的 observation，包含 call id、名称、内容、错误标志与耗时。
 
-JDK 8 没有 `CompletableFuture.orTimeout`。注册表通过 `Asyncs.withTimeout` 用 `ScheduledExecutorService` 实现超时竞速。
+超时由 `Asyncs.withTimeout` 用专用 `ScheduledExecutorService` 实现竞速。虽然 JDK 17 已有 `CompletableFuture.orTimeout`，但注册表保持 `Asyncs.withTimeout`：专用命名调度器可控线程生命周期，异常解包语义与 jdk8 分支一致。
 
 错误规则：
 

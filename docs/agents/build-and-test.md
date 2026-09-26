@@ -1,4 +1,4 @@
-# 构建、测试与 JDK 8 验证
+# 构建、测试与 JDK 17 验证
 
 **何时使用本文档：** 修改构建文件、依赖、语言特性、测试或 CI 时。
 
@@ -16,8 +16,8 @@ mvn -q verify
 mvn -q test -Dtest=AgentRuntimeTest
 ```
 
-`verify` 是兼容性门禁。根 POM 使用 Animal Sniffer 的 Java 8 签名，即使 Maven 本身运行在更新的 JDK 上，也能捕获对 Java 8 之后 API 的意外调用。
+`verify` 是兼容性门禁。根 POM 用 `maven.compiler.release=17`（即 javac `--release 17`）编译：即使 Maven 本身运行在更新的 JDK 上，也只有 JDK 17 及之前的语言特性与 API 可用，意外调用更新 API 会在编译期失败。
 
-不要只用 source/target 检查来替代它：`-source 8 -target 8` 只限制语法和字节码，本身并不能阻止链接到更新版本的 JDK API。
+不要退回只用 source/target：`-source 17 -target 17` 只限制语法和字节码，本身并不能阻止链接到更新版本的 JDK API；`--release` 同时约束平台 API。
 
 本仓库没有 Maven wrapper。除非真的加入了 wrapper，否则不要在文档中写 `./mvnw`。

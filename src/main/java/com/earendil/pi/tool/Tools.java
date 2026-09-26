@@ -94,22 +94,21 @@ public final class Tools {
             return null;
         }
         private static String mismatch(Object value,ParameterType type){
-            switch(type){
-                case STRING:return value instanceof String?null:"expected string";
-                case NUMBER:return value instanceof Number?null:"expected number";
-                case INTEGER:{
-                    if(value instanceof Integer||value instanceof Long)return null;
+            return switch(type){
+                case STRING -> value instanceof String?null:"expected string";
+                case NUMBER -> value instanceof Number?null:"expected number";
+                case INTEGER -> {
+                    if(value instanceof Integer||value instanceof Long)yield null;
                     if(value instanceof Number){
                         double d=((Number)value).doubleValue();
-                        return d==Math.floor(d)?null:"expected integer";
+                        yield d==Math.floor(d)?null:"expected integer";
                     }
-                    return "expected integer";
+                    yield "expected integer";
                 }
-                case BOOLEAN:return value instanceof Boolean?null:"expected boolean";
-                case OBJECT:return value instanceof Map?null:"expected object";
-                case ARRAY:return value instanceof List?null:"expected array";
-                default:return null;
-            }
+                case BOOLEAN -> value instanceof Boolean?null:"expected boolean";
+                case OBJECT -> value instanceof Map?null:"expected object";
+                case ARRAY -> value instanceof List?null:"expected array";
+            };
         }
     }
 
@@ -122,7 +121,7 @@ public final class Tools {
         }
     }
 
-    /** 工具注册与执行入口：参数校验、JDK 8 超时竞速、结果截断与 error observation 归一化。 */
+    /** 工具注册与执行入口：参数校验、超时竞速（专用调度器）、结果截断与 error observation 归一化。 */
     public static final class Registry implements AutoCloseable {
         public static final int DEFAULT_MAX_RESULT_CHARS=16384;
         private final ConcurrentMap<String,Tool> tools=new ConcurrentHashMap<String,Tool>();
@@ -141,9 +140,9 @@ public final class Tools {
             if(tools.putIfAbsent(name,safe)!=null)throw new IllegalArgumentException("tool already registered: "+name);
         }
         public Collection<Definition> definitions(){
-            List<Definition> result=new ArrayList<Definition>();
+            List<Definition> result=new ArrayList<>();
             for(Tool tool:tools.values())result.add(tool.definition());
-            Collections.sort(result,(a,b)->a.getName().compareTo(b.getName()));
+            result.sort((a,b)->a.getName().compareTo(b.getName()));
             return Collections.unmodifiableList(result);
         }
         /** 执行前校验：未知工具或参数不合法时返回错误消息，合法返回 null。策略评估应基于通过校验的调用。 */

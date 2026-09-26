@@ -10,4 +10,4 @@
 - 文档为必需的命令必须与分支上实际存在的文件/配置一一对应。
 - 当代码与思辨性的架构描述不一致时，以代码和可执行的构建配置为准。
 
-`docs/jdk8/` 下的文件是设计参考。其中部分示例早于实现，可能包含非 JDK 8 的 API；特别是 `CompletableFuture.orTimeout` 并不属于 JDK 8。以 `mvn verify` 和当前源码为兼容性的最终裁判。
+`docs/jdk8/` 与 `docs/jdk17/` 下的文件是设计参考。其中部分示例与实现存在出入（例如设计稿中的 `CompletableFuture.orTimeout` 并未在实际运行时采用）；以 `mvn verify` 和当前源码为最终裁判。

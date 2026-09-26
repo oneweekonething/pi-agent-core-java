@@ -8,8 +8,6 @@ import com.earendil.pi.session.Sessions;
 import com.earendil.pi.tool.Tools;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -59,16 +57,16 @@ public final class PiAgent implements AutoCloseable {
         final AtomicInteger turn=new AtomicInteger();
         Llm.Client llm=new Llm.FunctionalClient(request -> {
             if(turn.getAndIncrement()==0){
-                Map<String,Object> values=new LinkedHashMap<String,Object>();
+                Map<String,Object> values=new LinkedHashMap<>();
                 values.put("text","hello from the tool");
-                return Llm.Response.tools("calling echo",Collections.singletonList(Tools.Call.create("echo",values)));
+                return Llm.Response.tools("calling echo",List.of(Tools.Call.create("echo",values)));
             }
             Llm.Message last=request.getMessages().get(request.getMessages().size()-1);
             return Llm.Response.answer("Observed: "+last.getContent());
         });
 
         Tools.Tool echo=new Tools.Tool(){
-            public Tools.Definition definition(){return new Tools.Definition("echo","Returns supplied text.",Arrays.asList(new Tools.Parameter("text","Text to return.",true)));}
+            public Tools.Definition definition(){return new Tools.Definition("echo","Returns supplied text.",List.of(new Tools.Parameter("text","Text to return.",true)));}
             public CompletableFuture<Tools.Execution> execute(Map<String,Object> arguments){
                 return CompletableFuture.completedFuture(Tools.Execution.ok(String.valueOf(arguments.get("text"))));
             }

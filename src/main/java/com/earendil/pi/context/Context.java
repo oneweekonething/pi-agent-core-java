@@ -36,12 +36,16 @@ public final class Context {
             return new Llm.Request(config.systemPrompt,trimmed,new ArrayList<Tools.Definition>(defs));
         }
         private Llm.Message convert(Sessions.Node n){
-            if(n.getRole()==Sessions.Role.USER)return Llm.Message.user(n.getContent());
-            if(n.getRole()==Sessions.Role.SYSTEM)return Llm.Message.system(n.getContent());
-            if(n.getRole()==Sessions.Role.TOOL_RESULT)return Llm.Message.tool(n.getToolCallId(),n.getToolName(),n.getContent(),n.isError());
-            List<Tools.Call> calls=new ArrayList<Tools.Call>();
-            for(Sessions.ToolCallSnapshot c:n.getToolCalls())calls.add(new Tools.Call(c.getId(),c.getName(),new LinkedHashMap<String,Object>(c.getArguments())));
-            return Llm.Message.assistant(n.getContent(),calls);
+            return switch(n.getRole()){
+                case USER -> Llm.Message.user(n.getContent());
+                case SYSTEM -> Llm.Message.system(n.getContent());
+                case TOOL_RESULT -> Llm.Message.tool(n.getToolCallId(),n.getToolName(),n.getContent(),n.isError());
+                case ASSISTANT -> {
+                    List<Tools.Call> calls=new ArrayList<>();
+                    for(Sessions.ToolCallSnapshot c:n.getToolCalls())calls.add(new Tools.Call(c.getId(),c.getName(),new LinkedHashMap<>(c.getArguments())));
+                    yield Llm.Message.assistant(n.getContent(),calls);
+                }
+            };
         }
         private List<Llm.Message> trim(List<Llm.Message> messages,int budget){
             if(messages.isEmpty())return Collections.emptyList();
@@ -64,14 +68,14 @@ public final class Context {
         }
         private int estimateValue(Object value){
             if(value==null)return 4;
-            if(value instanceof Map){
+            if(value instanceof Map<?,?> map){
                 int n=2;
-                for(Map.Entry<?,?> entry:((Map<?,?>)value).entrySet())n+=estimate(String.valueOf(entry.getKey()))+estimateValue(entry.getValue())+4;
+                for(Map.Entry<?,?> entry:map.entrySet())n+=estimate(String.valueOf(entry.getKey()))+estimateValue(entry.getValue())+4;
                 return n;
             }
-            if(value instanceof List){
+            if(value instanceof List<?> list){
                 int n=2;
-                for(Object item:(List<?>)value)n+=estimateValue(item)+2;
+                for(Object item:list)n+=estimateValue(item)+2;
                 return n;
             }
             if(value instanceof Number||value instanceof Boolean)return 8;

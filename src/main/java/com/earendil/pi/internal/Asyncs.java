@@ -8,7 +8,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-/** JDK 8 兼容的异步与参数校验工具：超时竞速、异常解包、前置条件检查。 */
+/** 异步与参数校验工具：超时竞速、异常解包、前置条件检查。超时用调用方传入的专用调度器实现（而非共享的 orTimeout 内建调度器），保证线程命名与生命周期可控。 */
 public final class Asyncs {
     private Asyncs() {}
 
@@ -47,12 +47,10 @@ public final class Asyncs {
         require(scheduler, "scheduler");
         check(timeout > 0, "timeout must be > 0");
 
-        final CompletableFuture<T> result = new CompletableFuture<T>();
-        final ScheduledFuture<?> timeoutTask = scheduler.schedule(new Runnable() {
-            @Override public void run() {
-                result.completeExceptionally(new TimeoutException("operation timed out"));
-            }
-        }, timeout, unit);
+        final CompletableFuture<T> result = new CompletableFuture<>();
+        final ScheduledFuture<?> timeoutTask = scheduler.schedule(
+                () -> result.completeExceptionally(new TimeoutException("operation timed out")),
+                timeout, unit);
 
         source.whenComplete((value, error) -> {
             timeoutTask.cancel(false);
