@@ -127,15 +127,26 @@ public final class Sessions {
 
     public static final class Manager {
         private final Repository repository;
+        private final ConcurrentMap<String,Object> locks=new ConcurrentHashMap<String,Object>();
         public Manager(Repository repository){this.repository=Asyncs.require(repository,"repository");}
         public CompletableFuture<Tree> getOrCreate(final String id){
-            return repository.find(id).thenCompose(found -> {
-                if(found.isPresent()) return CompletableFuture.completedFuture(found.get());
-                Tree created=new Tree(id);
-                return repository.save(created).thenApply(ignored -> created);
-            });
+            Asyncs.nonBlank(id,"id");
+            synchronized(lockFor(id)){
+                return repository.find(id).thenCompose(found -> {
+                    if(found.isPresent()) return CompletableFuture.completedFuture(found.get());
+                    Tree created=new Tree(id);
+                    return repository.save(created).thenApply(ignored -> created);
+                });
+            }
         }
-        public CompletableFuture<Optional<Tree>> find(String id){return repository.find(id);}
+        public CompletableFuture<Optional<Tree>> find(String id){return repository.find(Asyncs.nonBlank(id,"id"));}
         public CompletableFuture<Void> save(Tree tree){return repository.save(tree);}
+        private Object lockFor(String id){
+            Object existing=locks.get(id);
+            if(existing!=null)return existing;
+            Object created=new Object();
+            Object raced=locks.putIfAbsent(id,created);
+            return raced==null?created:raced;
+        }
     }
 }

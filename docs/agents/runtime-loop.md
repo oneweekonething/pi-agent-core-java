@@ -23,3 +23,5 @@ Rules:
 - Do not automatically retry arbitrary tools; retries can duplicate side effects. Add retry policy only when tool idempotency is explicit.
 - `maxTurns` limits model turns, not individual tool calls.
 - Cancellation is cooperative. Stop before starting the next model/tool operation; do not use `Thread.stop()` or similar unsafe interruption.
+- Tool calls skipped because of cancellation still get `TOOL_RESULT` nodes with `error=true` (`tool call cancelled before execution`), so a persisted assistant tool-call message is never left without matching tool results.
+- Each model call is raced against `Config.llmTimeoutMillis`; a model timeout fails the run. Transient LLM failures are the client's concern (wrap the client in `Llm.RetryClient` for backoff with jitter).

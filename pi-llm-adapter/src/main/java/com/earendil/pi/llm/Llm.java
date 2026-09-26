@@ -1,11 +1,16 @@
 package com.earendil.pi.llm;
 
+import com.earendil.pi.common.Asyncs;
 import com.earendil.pi.tool.Tools;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 public final class Llm {
@@ -57,5 +62,44 @@ public final class Llm {
             try{return CompletableFuture.completedFuture(function.apply(request));}
             catch(Throwable e){CompletableFuture<Response> f=new CompletableFuture<Response>();f.completeExceptionally(e);return f;}
         }
+    }
+
+    public static final class RetryClient implements Client {
+        private final Client delegate;
+        private final int maxAttempts;
+        private final long baseBackoffMillis,maxBackoffMillis;
+        private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t=new Thread(r,"pi-llm-retry"); t.setDaemon(true); return t;
+        });
+        public RetryClient(Client delegate,int maxAttempts,long baseBackoffMillis,long maxBackoffMillis){
+            this.delegate=Asyncs.require(delegate,"delegate");
+            if(maxAttempts<1)throw new IllegalArgumentException("maxAttempts must be >= 1");
+            if(baseBackoffMillis<=0||maxBackoffMillis<baseBackoffMillis)throw new IllegalArgumentException("invalid backoff config");
+            this.maxAttempts=maxAttempts;this.baseBackoffMillis=baseBackoffMillis;this.maxBackoffMillis=maxBackoffMillis;
+        }
+        public CompletableFuture<Response> complete(final Request request){
+            final CompletableFuture<Response> result=new CompletableFuture<Response>();
+            attempt(request,1,result);
+            return result;
+        }
+        private void attempt(final Request request,final int attempt,final CompletableFuture<Response> result){
+            if(result.isDone())return;
+            CompletableFuture<Response> call;
+            try{call=Asyncs.require(delegate.complete(request),"delegate future");}
+            catch(Throwable e){call=new CompletableFuture<Response>();call.completeExceptionally(e);}
+            call.whenComplete((response,error)->{
+                if(error==null){result.complete(response);return;}
+                if(attempt>=maxAttempts){result.completeExceptionally(Asyncs.unwrap(error));return;}
+                scheduler.schedule(new Runnable(){
+                    public void run(){attempt(request,attempt+1,result);}
+                },delayFor(attempt),TimeUnit.MILLISECONDS);
+            });
+        }
+        private long delayFor(int attempt){
+            long backoff=baseBackoffMillis;
+            for(int i=1;i<attempt&&backoff<maxBackoffMillis;i++)backoff=Math.min(maxBackoffMillis,backoff*2);
+            return backoff+ThreadLocalRandom.current().nextLong(backoff/2+1);
+        }
+        public void close(){scheduler.shutdownNow();}
     }
 }

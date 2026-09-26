@@ -28,7 +28,7 @@ public final class PiAgent implements AutoCloseable {
     public static Builder builder(Llm.Client llm){return new Builder(llm);}
     public CompletableFuture<AgentRuntime.Result> run(String sessionId,String message){return runtime.run(sessionId,message);}
     public Sessions.Manager sessions(){return sessions;}
-    public void close(){registry.close();}
+    public void close(){runtime.close();registry.close();}
 
     public static final class Builder {
         private final Llm.Client llm;

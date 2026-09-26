@@ -1,6 +1,7 @@
 package com.earendil.pi.tool;
 
 import com.earendil.pi.common.Asyncs;
+import com.earendil.pi.common.Cancellation;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -15,6 +16,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 public final class Tools {
     private Tools() {}
@@ -69,13 +71,23 @@ public final class Tools {
     public interface Tool {
         Definition definition();
         CompletableFuture<Execution> execute(Map<String,Object> arguments);
+        default CompletableFuture<Execution> execute(Map<String,Object> arguments,Cancellation cancellation){
+            return execute(arguments);
+        }
     }
 
     public static final class Registry implements AutoCloseable {
+        public static final int DEFAULT_MAX_RESULT_CHARS=16384;
         private final ConcurrentMap<String,Tool> tools=new ConcurrentHashMap<String,Tool>();
+        private final int maxResultChars;
         private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t=new Thread(r,"pi-tool-timeout"); t.setDaemon(true); return t;
         });
+        public Registry(){this(DEFAULT_MAX_RESULT_CHARS);}
+        public Registry(int maxResultChars){
+            Asyncs.check(maxResultChars>0,"maxResultChars must be > 0");
+            this.maxResultChars=maxResultChars;
+        }
         public void register(Tool tool){
             Tool safe=Asyncs.require(tool,"tool");
             String name=Asyncs.require(safe.definition(),"definition").getName();
@@ -87,18 +99,29 @@ public final class Tools {
             Collections.sort(result,(a,b)->a.getName().compareTo(b.getName()));
             return Collections.unmodifiableList(result);
         }
-        public CompletableFuture<Result> execute(final Call call,long timeoutMillis){
+        public CompletableFuture<Result> execute(Call call,long timeoutMillis){
+            return execute(call,timeoutMillis,null);
+        }
+        public CompletableFuture<Result> execute(final Call call,long timeoutMillis,final Cancellation cancellation){
             final Tool tool=tools.get(Asyncs.require(call,"call").getName());
             if(tool==null)return CompletableFuture.completedFuture(new Result(call.getId(),call.getName(),"unknown tool: "+call.getName(),true,0));
+            final Cancellation token=cancellation==null?Cancellation.create():Cancellation.linkedTo(cancellation);
             final long start=System.nanoTime();
             final CompletableFuture<Execution> future;
-            try{future=Asyncs.require(tool.execute(call.getArguments()),"tool future");}
-            catch(Throwable e){return CompletableFuture.completedFuture(new Result(call.getId(),call.getName(),message(e),true,elapsed(start)));}
+            try{future=Asyncs.require(tool.execute(call.getArguments(),token),"tool future");}
+            catch(Throwable e){return CompletableFuture.completedFuture(new Result(call.getId(),call.getName(),truncate(message(e)),true,elapsed(start)));}
             return Asyncs.withTimeout(future,timeoutMillis,TimeUnit.MILLISECONDS,scheduler).handle((execution,error)->{
-                if(error!=null)return new Result(call.getId(),call.getName(),message(Asyncs.unwrap(error)),true,elapsed(start));
+                if(error!=null){
+                    if(Asyncs.unwrap(error) instanceof TimeoutException)token.cancel();
+                    return new Result(call.getId(),call.getName(),truncate(message(Asyncs.unwrap(error))),true,elapsed(start));
+                }
                 Execution safe=execution==null?Execution.error("tool returned null"):execution;
-                return new Result(call.getId(),call.getName(),safe.getContent(),safe.isError(),elapsed(start));
+                return new Result(call.getId(),call.getName(),truncate(safe.getContent()),safe.isError(),elapsed(start));
             });
+        }
+        private String truncate(String content){
+            if(content==null||content.length()<=maxResultChars)return content;
+            return content.substring(0,maxResultChars)+"...[truncated "+(content.length()-maxResultChars)+" chars]";
         }
         private static long elapsed(long start){return TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start);}
         private static String message(Throwable e){String m=e==null?null:e.getMessage();return m==null||m.trim().isEmpty()?(e==null?"tool failed":e.getClass().getSimpleName()):m;}

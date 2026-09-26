@@ -19,4 +19,9 @@ Error rules:
 - Timeouts are converted to error observations.
 - Policy denial is converted by the runtime to an error observation.
 
+Cancellation and result size:
+
+- Tools that poll for cancellation override `execute(arguments, Cancellation)`. The registry passes a token linked to the run-level token and cancels it when the tool times out, so long-running work can stop itself.
+- Tool result content larger than the registry's `maxResultChars` (default 16384) is truncated with a `...[truncated N chars]` marker before it becomes an observation.
+
 Keep the original `toolCallId` in every result so provider adapters can reconstruct structured tool history.

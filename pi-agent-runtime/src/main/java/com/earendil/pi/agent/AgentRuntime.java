@@ -1,5 +1,7 @@
 package com.earendil.pi.agent;
 
+import com.earendil.pi.common.Asyncs;
+import com.earendil.pi.common.Cancellation;
 import com.earendil.pi.context.Context;
 import com.earendil.pi.llm.Llm;
 import com.earendil.pi.security.Security;
@@ -9,23 +11,21 @@ import com.earendil.pi.tool.Tools;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
-public final class AgentRuntime {
+public final class AgentRuntime implements AutoCloseable {
     public enum StopReason { COMPLETED, MAX_TURNS, CANCELLED }
 
     public static final class Config {
-        private final int maxTurns; private final long toolTimeoutMillis;
-        public Config(int maxTurns,long toolTimeoutMillis){
-            if(maxTurns<=0||toolTimeoutMillis<=0)throw new IllegalArgumentException("invalid runtime config");
-            this.maxTurns=maxTurns;this.toolTimeoutMillis=toolTimeoutMillis;
+        private final int maxTurns; private final long toolTimeoutMillis,llmTimeoutMillis;
+        public Config(int maxTurns,long toolTimeoutMillis,long llmTimeoutMillis){
+            if(maxTurns<=0||toolTimeoutMillis<=0||llmTimeoutMillis<=0)throw new IllegalArgumentException("invalid runtime config");
+            this.maxTurns=maxTurns;this.toolTimeoutMillis=toolTimeoutMillis;this.llmTimeoutMillis=llmTimeoutMillis;
         }
-        public static Config defaults(){return new Config(16,30000);}
-    }
-
-    public static final class Cancellation {
-        private final AtomicBoolean cancelled=new AtomicBoolean(false);
-        public void cancel(){cancelled.set(true);} public boolean isCancelled(){return cancelled.get();}
+        public Config(int maxTurns,long toolTimeoutMillis){this(maxTurns,toolTimeoutMillis,120000);}
+        public static Config defaults(){return new Config(16,30000,120000);}
     }
 
     public static final class Result {
@@ -40,12 +40,15 @@ public final class AgentRuntime {
     private final Context.Assembler context;
     private final Security.Policy policy;
     private final Config config;
+    private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t=new Thread(r,"pi-llm-timeout"); t.setDaemon(true); return t;
+    });
 
     public AgentRuntime(Sessions.Manager sessions,Tools.Registry tools,Llm.Client llm,Context.Assembler context,Security.Policy policy,Config config){
         this.sessions=sessions;this.tools=tools;this.llm=llm;this.context=context;this.policy=policy;this.config=config;
     }
 
-    public CompletableFuture<Result> run(String sessionId,String userMessage){return run(sessionId,userMessage,new Cancellation());}
+    public CompletableFuture<Result> run(String sessionId,String userMessage){return run(sessionId,userMessage,Cancellation.create());}
 
     public CompletableFuture<Result> run(final String sessionId,final String userMessage,final Cancellation cancellation){
         return sessions.getOrCreate(sessionId).thenCompose(session -> {
@@ -57,7 +60,7 @@ public final class AgentRuntime {
     private CompletableFuture<Result> loop(final Sessions.Tree session,final int turn,final String lastText,final Cancellation cancellation){
         if(cancellation.isCancelled())return finish(session,lastText,Math.max(0,turn-1),StopReason.CANCELLED);
         if(turn>config.maxTurns)return finish(session,lastText,config.maxTurns,StopReason.MAX_TURNS);
-        return llm.complete(context.assemble(session,tools.definitions()))
+        return Asyncs.withTimeout(llm.complete(context.assemble(session,tools.definitions())),config.llmTimeoutMillis,TimeUnit.MILLISECONDS,scheduler)
                 .thenCompose(response -> handle(session,turn,response,cancellation));
     }
 
@@ -72,11 +75,12 @@ public final class AgentRuntime {
     }
 
     private CompletableFuture<Void> executeSequential(final Sessions.Tree session,final List<Tools.Call> calls,final int index,final Cancellation cancellation){
-        if(index>=calls.size()||cancellation.isCancelled())return CompletableFuture.completedFuture(null);
+        if(cancellation.isCancelled()){appendSkipped(session,calls,index);return CompletableFuture.completedFuture(null);}
+        if(index>=calls.size())return CompletableFuture.completedFuture(null);
         final Tools.Call call=calls.get(index);
         Security.Decision decision=policy.evaluate(call);
         CompletableFuture<Tools.Result> future=decision.isAllowed()
-                ? tools.execute(call,config.toolTimeoutMillis)
+                ? tools.execute(call,config.toolTimeoutMillis,cancellation)
                 : CompletableFuture.completedFuture(new Tools.Result(call.getId(),call.getName(),"tool denied: "+decision.getReason(),true,0));
         return future.thenCompose(result -> {
             session.appendTool(result.getCallId(),result.getToolName(),result.getContent(),result.isError());
@@ -84,8 +88,17 @@ public final class AgentRuntime {
         });
     }
 
+    private static void appendSkipped(Sessions.Tree session,List<Tools.Call> calls,int from){
+        for(int i=from;i<calls.size();i++){
+            Tools.Call call=calls.get(i);
+            session.appendTool(call.getId(),call.getName(),"tool call cancelled before execution",true);
+        }
+    }
+
     private CompletableFuture<Result> finish(Sessions.Tree session,String text,int turns,StopReason reason){
         Result result=new Result(session.getId(),text,turns,reason);
         return sessions.save(session).thenApply(v -> result);
     }
+
+    public void close(){scheduler.shutdownNow();}
 }
