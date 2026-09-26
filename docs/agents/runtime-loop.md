@@ -1,6 +1,6 @@
 # Agent 运行时循环与取消
 
-**何时使用本文档：** 修改 `pi-agent-runtime`、调整轮次语义、取消机制或停止条件时。
+**何时使用本文档：** 修改 `com.earendil.pi.agent`（`AgentRuntime`）、调整轮次语义、取消机制或停止条件时。
 
 不变式是：
 

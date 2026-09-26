@@ -13,7 +13,7 @@ mvn -q verify
 只跑运行时相关测试：
 
 ```bash
-mvn -q -pl pi-agent-runtime -am test
+mvn -q test -Dtest=AgentRuntimeTest
 ```
 
 `verify` 是兼容性门禁。根 POM 使用 Animal Sniffer 的 Java 8 签名，即使 Maven 本身运行在更新的 JDK 上，也能捕获对 Java 8 之后 API 的意外调用。
