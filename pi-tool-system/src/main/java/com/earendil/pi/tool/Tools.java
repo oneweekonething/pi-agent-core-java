@@ -18,11 +18,13 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+/** 工具领域类型：定义、调用、注册表与执行结果；工具失败一律归一化为 error observation。 */
 public final class Tools {
     private Tools() {}
 
     public enum ParameterType { STRING, NUMBER, INTEGER, BOOLEAN, OBJECT, ARRAY }
 
+    /** 工具参数定义：名称、描述、是否必填、类型（用于执行前校验）。 */
     public static final class Parameter {
         private final String name,description;
         private final boolean required;
@@ -46,6 +48,7 @@ public final class Tools {
         public String getName(){return name;} public String getDescription(){return description;} public List<Parameter> getParameters(){return parameters;}
     }
 
+    /** 模型发起的一次工具调用：call id、工具名、参数。 */
     public static final class Call {
         private final String id,name;
         private final Map<String,Object> arguments;
@@ -65,6 +68,7 @@ public final class Tools {
         public String getContent(){return content;} public boolean isError(){return error;}
     }
 
+    /** 工具执行结果：call id、工具名、内容、错误标志与耗时，作为 observation 回给模型。 */
     public static final class Result {
         private final String callId,toolName,content; private final boolean error; private final long durationMillis;
         public Result(String callId,String toolName,String content,boolean error,long durationMillis){
@@ -74,6 +78,7 @@ public final class Tools {
         public boolean isError(){return error;} public long getDurationMillis(){return durationMillis;}
     }
 
+    /** 工具参数校验：必填缺失与类型不匹配返回错误消息，执行前拦截。 */
     public static final class Arguments {
         private Arguments() {}
         public static String validate(Definition definition,Map<String,Object> arguments){
@@ -108,6 +113,7 @@ public final class Tools {
         }
     }
 
+    /** 工具契约：提供定义并以 future 返回执行结果；可重写带取消令牌的重载以支持协作取消。 */
     public interface Tool {
         Definition definition();
         CompletableFuture<Execution> execute(Map<String,Object> arguments);
@@ -116,6 +122,7 @@ public final class Tools {
         }
     }
 
+    /** 工具注册与执行入口：参数校验、JDK 8 超时竞速、结果截断与 error observation 归一化。 */
     public static final class Registry implements AutoCloseable {
         public static final int DEFAULT_MAX_RESULT_CHARS=16384;
         private final ConcurrentMap<String,Tool> tools=new ConcurrentHashMap<String,Tool>();

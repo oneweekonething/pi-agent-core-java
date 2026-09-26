@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/** 面向最终用户的 SDK 门面：组装会话、工具、策略与运行时，并提供可运行 Demo。 */
 public final class PiAgent implements AutoCloseable {
     private final AgentRuntime runtime;
     private final Tools.Registry registry;
@@ -30,6 +31,7 @@ public final class PiAgent implements AutoCloseable {
     public Sessions.Manager sessions(){return sessions;}
     public void close(){runtime.close();registry.close();}
 
+    /** 构建器：注册工具、选择 Repository/策略/配置并组装 {@link PiAgent}。 */
     public static final class Builder {
         private final Llm.Client llm;
         private final List<Tools.Tool> tools=new ArrayList<Tools.Tool>();

@@ -1,23 +1,23 @@
-# Java 8 Coding Conventions
+# Java 8 编码规范
 
-**Use this document when:** writing or reviewing Java source.
+**何时使用本文档：** 编写或评审 Java 源码时。
 
-Allowed baseline: Java 8 language and runtime APIs.
+允许的基线：Java 8 语言特性与运行时 API。
 
-Avoid:
+避免：
 
-- `record`, sealed classes/interfaces, text blocks, switch expressions, pattern matching.
-- `var`.
-- `List.of`, `Map.of`, `Set.of`, `Optional.isEmpty`.
-- `CompletableFuture.orTimeout` / `completeOnTimeout`.
-- APIs added to the JDK after Java 8.
+- `record`、sealed 类/接口、文本块、switch 表达式、模式匹配。
+- `var`。
+- `List.of`、`Map.of`、`Set.of`、`Optional.isEmpty`。
+- `CompletableFuture.orTimeout` / `completeOnTimeout`。
+- Java 8 之后加入 JDK 的 API。
 
-Prefer:
+优先：
 
-- Small immutable value objects with explicit constructors/getters.
-- `CompletableFuture` composition instead of blocking `get()` in runtime code.
-- `java.util.concurrent` primitives for scheduling and cancellation.
-- Defensive copies for collections crossing module boundaries.
-- Explicit error observations at agent/tool boundaries.
+- 小型不可变值对象，配显式构造器/getter。
+- 运行时代码用 `CompletableFuture` 组合，而不是阻塞式 `get()`。
+- 用 `java.util.concurrent` 原语做调度与取消。
+- 跨模块边界的集合做防御性拷贝。
+- 在 agent/工具边界给出显式的 error observation。
 
-Do not add Lombok to core runtime classes unless there is a concrete payoff that justifies making annotation processing part of the build.
+除非有具体收益、值得把注解处理纳入构建，否则不要在核心运行时类中引入 Lombok。

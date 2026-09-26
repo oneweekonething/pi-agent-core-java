@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/** 上下文组装：从会话活跃路径构造模型请求，并按 token 预算从最老的消息开始裁剪。 */
 public final class Context {
     private Context() {}
 
@@ -23,6 +24,7 @@ public final class Context {
         public static Config defaults(){return new Config("You are a coding agent. Use tools when needed, then use their observations before answering.",32000,4000);}
     }
 
+    /** 上下文组装器：保持 assistant tool-call 与 tool-result 配对，估算计入参数与工具 schema。 */
     public static final class Assembler {
         private final Config config;
         public Assembler(Config config){this.config=config;}

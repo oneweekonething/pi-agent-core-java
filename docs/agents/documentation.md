@@ -1,13 +1,13 @@
-# Documentation Maintenance
+# 文档维护
 
-**Use this document when:** changing `AGENTS.md`, design docs, README files, or commands shown to contributors.
+**何时使用本文档：** 修改 `AGENTS.md`、设计文档、README，或贡献者可见的命令时。
 
-Progressive disclosure rules:
+渐进披露规则：
 
-- Keep root `AGENTS.md` limited to facts every task needs plus links to topic instructions.
-- Put task-specific rules under `docs/agents/`.
-- Every topic file must state when it applies.
-- Commands documented as required must correspond to files/configuration that exist in the branch.
-- Prefer code and executable build configuration over speculative architecture prose when they disagree.
+- 根 `AGENTS.md` 只保留每个任务都需要的事实，外加指向主题规范的链接。
+- 任务特定的规则放在 `docs/agents/` 下。
+- 每个主题文件必须说明自己的适用时机。
+- 文档为必需的命令必须与分支上实际存在的文件/配置一一对应。
+- 当代码与思辨性的架构描述不一致时，以代码和可执行的构建配置为准。
 
-The files under `docs/jdk8/` are design references. Some examples predate the implementation and may contain non-JDK-8 APIs; notably `CompletableFuture.orTimeout` is not JDK 8. Treat `mvn verify` and current source code as the compatibility authority.
+`docs/jdk8/` 下的文件是设计参考。其中部分示例早于实现，可能包含非 JDK 8 的 API；特别是 `CompletableFuture.orTimeout` 并不属于 JDK 8。以 `mvn verify` 和当前源码为兼容性的最终裁判。

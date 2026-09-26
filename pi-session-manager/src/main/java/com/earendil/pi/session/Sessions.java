@@ -13,6 +13,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
+/** 会话领域类型：树状会话（{@link Tree}）、持久化 SPI（{@link Repository}）与去重管理器（{@link Manager}）。 */
 public final class Sessions {
     private Sessions() {}
 
@@ -34,6 +35,7 @@ public final class Sessions {
         public Map<String,Object> getArguments(){return arguments;}
     }
 
+    /** 会话树中的单个节点：user/assistant/tool_result/system 之一的不可变消息。 */
     public static final class Node {
         private final String id;
         private final String parentId;
@@ -76,6 +78,7 @@ public final class Sessions {
         public boolean isError(){return error;}
     }
 
+    /** 树状会话：保留全部节点，{@link #activePath()} 返回唯一会发给模型的活跃路径。 */
     public static final class Tree {
         private final String id;
         private final Map<String,Node> nodes=new LinkedHashMap<String,Node>();
@@ -109,6 +112,7 @@ public final class Sessions {
         public String getId(){return id;}
     }
 
+    /** 会话持久化 SPI；实现方可内存、JSONL 或数据库。 */
     public interface Repository {
         CompletableFuture<Optional<Tree>> find(String id);
         CompletableFuture<Void> save(Tree tree);
@@ -125,6 +129,7 @@ public final class Sessions {
         }
     }
 
+    /** 会话访问入口：getOrCreate 对创建中的会话按 id 去重，避免并发产生两棵树。 */
     public static final class Manager {
         private final Repository repository;
         private final ConcurrentMap<String,CompletableFuture<Tree>> creations=new ConcurrentHashMap<String,CompletableFuture<Tree>>();

@@ -1,16 +1,16 @@
-# Sessions and Context Assembly
+# 会话与上下文组装
 
-**Use this document when:** editing the session tree, branching/rewind behavior, message conversion, or context trimming.
+**何时使用本文档：** 修改会话树、分支/回退行为、消息转换或上下文裁剪时。
 
-`SessionTree` retains all nodes and keeps one `activeTipId`. `activePath()` follows parents from the active tip to the root and is the only history sent to the model.
+`Sessions.Tree` 保留全部节点并维护唯一的 `activeTipId`。`activePath()` 从活跃尖端沿父指针走到根，是唯一会发给模型的历史。
 
-Rules:
+规则：
 
-- Branching creates a new user node whose parent is the selected historical node.
-- Rewind changes only the active tip; it does not delete history.
-- Assistant nodes store structured tool-call snapshots.
-- Tool-result nodes store `toolCallId`, tool name, error status, and observation content.
-- Context assembly must preserve assistant-tool-call -> tool-result ordering.
-- Budget trimming removes oldest messages first and always keeps at least the newest message. Estimates include tool-call arguments and tool parameter schemas, not just message text.
-- `Manager.getOrCreate` deduplicates in-flight creations per session id through a shared future, so concurrent callers on an async repository get the same tree instead of two creations. Cross-manager or cross-process duplicate creation still needs repository-level atomicity.
-- Token estimation is intentionally heuristic in core. Provider-specific tokenizers belong in adapter implementations.
+- 分支会创建一个新 user 节点，其父节点是选中的历史节点。
+- 回退（rewind）只改变活跃尖端，不删除历史。
+- assistant 节点存储结构化的 tool-call 快照。
+- tool-result 节点存储 `toolCallId`、工具名、错误状态与 observation 内容。
+- 上下文组装必须保持 assistant-tool-call -> tool-result 的顺序。
+- 预算裁剪优先移除最老的消息，且总是至少保留最新一条消息。估算包含 tool-call 参数与工具参数 schema，而不只是消息文本。
+- `Manager.getOrCreate` 通过共享的 per-id future 对创建中的会话去重，因此在异步 Repository 上并发调用拿到的是同一棵树而不是两次创建。跨 Manager 或跨进程的重复创建仍需要 Repository 层的原子性。
+- token 估算在核心层刻意保持启发式。供应商专属的分词器属于适配器实现。

@@ -15,9 +15,11 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
+/** LLM 领域类型：供应商中立的请求/响应/消息抽象，以及客户端接口与重试装饰器。 */
 public final class Llm {
     private Llm() {}
 
+    /** 单条模型消息：user/system/assistant（可携带 tool calls）或 tool 结果。 */
     public static final class Message {
         private final String role,content,toolCallId,toolName;
         private final List<Tools.Call> toolCalls;
@@ -55,6 +57,7 @@ public final class Llm {
         public String getText(){return text;} public List<Tools.Call> getToolCalls(){return calls;}
     }
 
+    /** 供应商中立的模型客户端接口；实现方可对接 OpenAI、Claude 等，可选支持取消令牌。 */
     public interface Client {
         CompletableFuture<Response> complete(Request request);
         default CompletableFuture<Response> complete(Request request,Cancellation cancellation){
@@ -71,6 +74,7 @@ public final class Llm {
         }
     }
 
+    /** 重试装饰器：指数退避加抖动；可通过 {@link RetryPolicy} 限定只重试瞬态错误，取消令牌生效后停止调度新尝试。 */
     public static final class RetryClient implements Client {
         public interface RetryPolicy { boolean shouldRetry(Throwable error); }
         private final Client delegate;

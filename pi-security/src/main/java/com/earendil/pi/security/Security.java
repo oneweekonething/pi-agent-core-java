@@ -6,6 +6,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
 
+/** 工具授权策略：在执行前评估调用，拒绝将转换为 error observation 而不是异常。 */
 public final class Security {
     private Security() {}
 
@@ -17,6 +18,7 @@ public final class Security {
         public boolean isAllowed(){return allowed;} public String getReason(){return reason;}
     }
 
+    /** 授权策略接口：实现方可基于工具名、参数或更复杂的上下文做判定。 */
     public interface Policy { Decision evaluate(Tools.Call call); }
 
     public static final class AllowAll implements Policy {

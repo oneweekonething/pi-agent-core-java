@@ -17,9 +17,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+/** Agent 执行引擎：Think -> Action -> Tool -> Observation 的多轮循环，同一 session 同时只允许一个 run。 */
 public final class AgentRuntime implements AutoCloseable {
     public enum StopReason { COMPLETED, MAX_TURNS, CANCELLED }
 
+    /** 运行时配置：最大轮次、工具超时与模型调用超时（毫秒）。 */
     public static final class Config {
         private final int maxTurns; private final long toolTimeoutMillis,llmTimeoutMillis;
         public Config(int maxTurns,long toolTimeoutMillis,long llmTimeoutMillis){
@@ -30,6 +32,7 @@ public final class AgentRuntime implements AutoCloseable {
         public static Config defaults(){return new Config(16,30000,120000);}
     }
 
+    /** run 的最终结果：session id、最终文本、轮次数与停止原因。 */
     public static final class Result {
         private final String sessionId,text; private final int turns; private final StopReason reason;
         public Result(String sessionId,String text,int turns,StopReason reason){this.sessionId=sessionId;this.text=text==null?"":text;this.turns=turns;this.reason=reason;}

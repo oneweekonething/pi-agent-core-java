@@ -9,7 +9,7 @@
   <version>1.0.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Pi Agent Core Java</name>
-  <description>JDK 8 compatible minimal agent runtime: Think -> Action -> Tool -> Observation.</description>
+  <description>兼容 JDK 8 的最小 Agent 运行时：Think -> Action -> Tool -> Observation。</description>
 
   <properties>
     <maven.compiler.source>1.8</maven.compiler.source>

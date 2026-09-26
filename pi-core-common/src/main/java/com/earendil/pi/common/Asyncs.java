@@ -8,6 +8,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+/** JDK 8 兼容的异步与参数校验工具：超时竞速、异常解包、前置条件检查。 */
 public final class Asyncs {
     private Asyncs() {}
 
