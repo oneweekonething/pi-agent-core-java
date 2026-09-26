@@ -11,6 +11,7 @@ Pi Agent Core Java is a JDK 8-compatible, Maven multi-module implementation of t
 - Keep both Java language features **and Java runtime APIs** compatible with JDK 8. Do not use APIs introduced after Java 8 (for example `CompletableFuture.orTimeout`, `List.of`, `record`, `var`).
 - Preserve the runtime ordering `LLM -> tool calls -> tool results -> LLM`; tool failures are observations returned to the model, not uncaught control-flow exceptions.
 - Keep module dependencies acyclic and dependencies directed toward lower-level modules.
+- Research in English, respond in Chinese.
 
 ## Read only when relevant
 
