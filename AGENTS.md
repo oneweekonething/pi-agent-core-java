@@ -9,7 +9,7 @@ Pi Agent Core Java 是最小 Agent 循环（Think -> Action -> Tool -> Observati
 - 测试：`mvn -q test`
 - 完整兼容性验证：`mvn -q verify`
 - Java 语言特性与运行时 API 以 JDK 17 为基线，由 `--release 17` 门禁强制（拒绝 JDK 17 之后的 API）。switch 表达式、`instanceof` 模式匹配、文本块、`List.of`/`Map.of` 等 Java 9-17 特性可用；不使用 JDK 17 之后才引入的 API。
-- 本分支与 `jdk8` 分支保持功能与处理逻辑一致：改动运行时行为时以 jdk8 分支为准绳，测试集与 jdk8 保持一致（测试通过即是对等性的证据）。`docs/jdk17/` 下的设计稿是早期资料、不作为实现规范（偏差清单见 `docs/jdk17/README.md`）。
+- 本分支与 `jdk8` 分支保持功能与处理逻辑一致：改动运行时行为时以 jdk8 分支为准绳。测试集与 jdk8 保持一致；测试通过是行为对等性的回归保障，运行时语义变更仍需 review jdk8/jdk17 diff。`docs/jdk17/` 下的设计稿是早期资料、不作为实现规范（偏差清单见 `docs/jdk17/README.md`）。
 - 保持运行时顺序 `LLM -> tool calls -> tool results -> LLM`；工具失败是返回给模型的 observation，而不是未捕获的控制流异常。
 - 保持 package 依赖无环且方向指向更低层的包：`internal` → `session`/`tool` → `llm` → `context`、`security` → `agent` → `PiAgent`（根包）。根包的 `CancellationToken` 是公共 API，可供各层使用；除此之外低层包不得引用 `PiAgent` 或 `agent`。架构边界由 package、`ArchitectureTest` 与本文档约定维护，不再使用多 Maven module 强制。
 - Research in English, respond in Chinese.（资料检索与代码调研用英文，对用户的回复用中文。）

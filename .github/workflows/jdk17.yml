@@ -1,22 +1,22 @@
-name: JDK 8 构建验证
+name: JDK 17 构建验证
 
 on:
   push:
-    branches: [jdk8]
+    branches: [jdk17]
   pull_request:
     branches: [main]
 
 jobs:
   verify:
-    # PR 到 main 时只验证来自 jdk8 分支的 PR；jdk17 来源的 PR（--release 17）由 jdk17.yml 负责
-    if: github.event_name == 'push' || github.head_ref == 'jdk8'
+    # PR 到 main 时只验证来自 jdk17 分支的 PR；jdk8 来源的 PR 由 jdk8.yml 负责
+    if: github.event_name == 'push' || github.head_ref == 'jdk17'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '8'
+          java-version: '17'
           cache: maven
       - name: 验证
         run: mvn -B -q verify
