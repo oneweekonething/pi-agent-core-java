@@ -50,6 +50,8 @@ public class ArchitectureTest {
 
     private static final Pattern PACKAGE = Pattern.compile("^package\\s+([\\w.]+);", Pattern.MULTILINE);
     private static final Pattern IMPORT = Pattern.compile("^import\\s+(com\\.earendil\\.pi[\\w.]*);", Pattern.MULTILINE);
+    private static final Pattern WILDCARD_IMPORT = Pattern.compile("^import\\s+(com\\.earendil\\.pi[\\w.]*)\\.\\*;", Pattern.MULTILINE);
+    private static final String ROOT_API = "com.earendil.pi.CancellationToken";
 
     @Test public void packageDependenciesPointDownward() throws Exception {
         File sourceRoot = new File("src/main/java");
@@ -62,10 +64,19 @@ public class ArchitectureTest {
             String ownPackage = packageMatcher.group(1);
             Set<String> allowedImports = ALLOWED.get(ownPackage);
             assertTrue("unknown package " + ownPackage + "; add it to ArchitectureTest.ALLOWED: " + file, allowedImports != null);
+            Matcher wildcardMatcher = WILDCARD_IMPORT.matcher(body);
+            while (wildcardMatcher.find()) {
+                violations.add(file.getName() + ": wildcard import " + wildcardMatcher.group(1) + ".* hides package dependencies; import classes explicitly");
+            }
             Matcher importMatcher = IMPORT.matcher(body);
             while (importMatcher.find()) {
                 String imported = importMatcher.group(1);
                 String importedPackage = imported.substring(0, imported.lastIndexOf('.'));
+                if (ROOT.equals(importedPackage) && !ROOT.equals(ownPackage) && !ROOT_API.equals(imported)) {
+                    violations.add(file.getName() + ": " + ownPackage + " must not import " + imported
+                            + "; the root-package API for lower layers is " + ROOT_API + " only");
+                    continue;
+                }
                 if (!importedPackage.equals(ownPackage) && !allowedImports.contains(importedPackage)) {
                     violations.add(file.getName() + ": " + ownPackage + " must not import " + importedPackage);
                 }
