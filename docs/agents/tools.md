@@ -21,7 +21,7 @@ JDK 8 没有 `CompletableFuture.orTimeout`。注册表通过 `Asyncs.withTimeout
 
 取消与结果大小：
 
-- 参数在执行前会依据定义校验（`Tools.Arguments.validate`）：缺失的必填参数或参数类型不匹配（`ParameterType`）会成为 error observation，且工具不会被调用。
+- 参数在执行前会依据定义校验（`Tools.Registry.validate`，即 `Tools.Arguments.validate`）：未知工具、缺失的必填参数或参数类型不匹配（`ParameterType`）会成为 error observation，且工具不会被调用。运行时在 `Security.Policy` 评估之前校验，策略只接触已验证的参数。
 - 需要轮询取消状态的工具应重写 `execute(arguments, Cancellation)`。注册表传入一个链接到 run 级 token 的 token，并在工具超时时取消它，长时间运行的任务可以据此自行停止。
 - 超过注册表 `maxResultChars`（默认 16384）的工具结果内容，在成为 observation 前会被截断并附加 `...[truncated N chars]` 标记。
 

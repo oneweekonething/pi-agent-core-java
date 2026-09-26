@@ -97,4 +97,23 @@ public class LlmTest {
         }
         assertEquals(1,attempts.get());
     }
+
+    @Test(timeout=5000) public void callbackFailureCompletesResult(){
+        Llm.Client failing=new Llm.Client(){
+            public CompletableFuture<Llm.Response> complete(Llm.Request request){
+                CompletableFuture<Llm.Response> failed=new CompletableFuture<Llm.Response>();
+                failed.completeExceptionally(new IllegalStateException("down"));
+                return failed;
+            }
+        };
+        Llm.RetryClient client=new Llm.RetryClient(failing,3,1,8,new Llm.RetryClient.RetryPolicy(){
+            public boolean shouldRetry(Throwable error){throw new IllegalStateException("policy broken");}
+        });
+        try{
+            Throwable error=client.complete(request()).handle((r,e)->e).join();
+            assertTrue(error instanceof IllegalStateException);
+        } finally {
+            client.close();
+        }
+    }
 }

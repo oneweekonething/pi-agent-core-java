@@ -146,6 +146,12 @@ public final class Tools {
             Collections.sort(result,(a,b)->a.getName().compareTo(b.getName()));
             return Collections.unmodifiableList(result);
         }
+        /** 执行前校验：未知工具或参数不合法时返回错误消息，合法返回 null。策略评估应基于通过校验的调用。 */
+        public String validate(Call call){
+            Tool tool=tools.get(Asyncs.require(call,"call").getName());
+            if(tool==null)return "unknown tool: "+call.getName();
+            return Arguments.validate(tool.definition(),call.getArguments());
+        }
         public CompletableFuture<Result> execute(Call call,long timeoutMillis){
             return execute(call,timeoutMillis,null);
         }

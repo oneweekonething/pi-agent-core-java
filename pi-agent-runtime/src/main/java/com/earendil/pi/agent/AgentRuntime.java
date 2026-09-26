@@ -69,10 +69,14 @@ public final class AgentRuntime implements AutoCloseable {
             final CompletableFuture<Result> created=new CompletableFuture<Result>();
             if(activeRuns.putIfAbsent(sessionId,created)!=null)continue;
             created.whenComplete((result,error)->activeRuns.remove(sessionId,created));
-            execute(sessionId,userMessage,cancellation).whenComplete((result,error)->{
-                if(error!=null)created.completeExceptionally(error);
-                else created.complete(result);
-            });
+            try{
+                execute(sessionId,userMessage,cancellation).whenComplete((result,error)->{
+                    if(error!=null)created.completeExceptionally(Asyncs.unwrap(error));
+                    else created.complete(result);
+                });
+            }catch(Throwable error){
+                created.completeExceptionally(error);
+            }
             return created;
         }
     }
@@ -109,10 +113,16 @@ public final class AgentRuntime implements AutoCloseable {
         if(cancellation.isCancelled()){appendSkipped(session,calls,index);return CompletableFuture.completedFuture(null);}
         if(index>=calls.size())return CompletableFuture.completedFuture(null);
         final Tools.Call call=calls.get(index);
-        Security.Decision decision=policy.evaluate(call);
-        CompletableFuture<Tools.Result> future=decision.isAllowed()
-                ? tools.execute(call,config.toolTimeoutMillis,cancellation)
-                : CompletableFuture.completedFuture(new Tools.Result(call.getId(),call.getName(),"tool denied: "+decision.getReason(),true,0));
+        String invalid=tools.validate(call);
+        CompletableFuture<Tools.Result> future;
+        if(invalid!=null){
+            future=CompletableFuture.completedFuture(new Tools.Result(call.getId(),call.getName(),invalid,true,0));
+        }else{
+            Security.Decision decision=policy.evaluate(call);
+            future=decision.isAllowed()
+                    ? tools.execute(call,config.toolTimeoutMillis,cancellation)
+                    : CompletableFuture.completedFuture(new Tools.Result(call.getId(),call.getName(),"tool denied: "+decision.getReason(),true,0));
+        }
         return future.thenCompose(result -> {
             session.appendTool(result.getCallId(),result.getToolName(),result.getContent(),result.isError());
             return executeSequential(session,calls,index+1,cancellation);

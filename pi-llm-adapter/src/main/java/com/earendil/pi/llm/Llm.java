@@ -110,14 +110,18 @@ public final class Llm {
             try{call=Asyncs.require(delegate.complete(request,token),"delegate future");}
             catch(Throwable e){call=new CompletableFuture<Response>();call.completeExceptionally(e);}
             call.whenComplete((response,error)->{
-                if(error==null){result.complete(response);return;}
-                if(token.isCancelled()){result.completeExceptionally(new CancellationException("llm call cancelled"));return;}
-                if(attempt>=maxAttempts||!policy.shouldRetry(Asyncs.unwrap(error))){
-                    result.completeExceptionally(Asyncs.unwrap(error));return;
+                try{
+                    if(error==null){result.complete(response);return;}
+                    if(token.isCancelled()){result.completeExceptionally(new CancellationException("llm call cancelled"));return;}
+                    if(attempt>=maxAttempts||!policy.shouldRetry(Asyncs.unwrap(error))){
+                        result.completeExceptionally(Asyncs.unwrap(error));return;
+                    }
+                    scheduler.schedule(new Runnable(){
+                        public void run(){attempt(request,attempt+1,token,result);}
+                    },delayFor(attempt),TimeUnit.MILLISECONDS);
+                }catch(Throwable callbackError){
+                    result.completeExceptionally(Asyncs.unwrap(callbackError));
                 }
-                scheduler.schedule(new Runnable(){
-                    public void run(){attempt(request,attempt+1,token,result);}
-                },delayFor(attempt),TimeUnit.MILLISECONDS);
             });
         }
         private long delayFor(int attempt){

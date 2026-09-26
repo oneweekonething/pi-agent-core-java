@@ -129,28 +129,37 @@ public final class Sessions {
         }
     }
 
-    /** 会话访问入口：getOrCreate 对创建中的会话按 id 去重，避免并发产生两棵树。 */
+    /** 会话访问入口：getOrCreate 以 per-id single-flight 包住整个 find-or-create，并发调用共享同一创建过程，结束后清理。 */
     public static final class Manager {
         private final Repository repository;
         private final ConcurrentMap<String,CompletableFuture<Tree>> creations=new ConcurrentHashMap<String,CompletableFuture<Tree>>();
         public Manager(Repository repository){this.repository=Asyncs.require(repository,"repository");}
         public CompletableFuture<Tree> getOrCreate(final String id){
             Asyncs.nonBlank(id,"id");
-            return repository.find(id).thenCompose(found -> {
-                if(found.isPresent()) return CompletableFuture.completedFuture(found.get());
-                final CompletableFuture<Tree> creation=new CompletableFuture<Tree>();
-                final CompletableFuture<Tree> raced=creations.putIfAbsent(id,creation);
-                if(raced!=null)return raced;
-                final Tree created=new Tree(id);
-                return repository.save(created).whenComplete((v,error)->{
-                    if(error!=null){
-                        creation.completeExceptionally(error);
-                        creations.remove(id,creation);
-                    } else {
-                        creation.complete(created);
-                    }
-                }).thenApply(v -> created);
+            final CompletableFuture<Tree> flight=new CompletableFuture<Tree>();
+            final CompletableFuture<Tree> existing=creations.putIfAbsent(id,flight);
+            if(existing!=null)return existing;
+            final CompletableFuture<Tree> work;
+            try{
+                work=repository.find(id).thenCompose(found -> {
+                    if(found.isPresent())return CompletableFuture.completedFuture(found.get());
+                    final Tree created=new Tree(id);
+                    return repository.save(created).thenApply(ignored -> created);
+                });
+            }catch(Throwable error){
+                flight.completeExceptionally(error);
+                creations.remove(id,flight);
+                return flight;
+            }
+            work.whenComplete((tree,error)->{
+                try{
+                    if(error!=null)flight.completeExceptionally(Asyncs.unwrap(error));
+                    else flight.complete(tree);
+                }finally{
+                    creations.remove(id,flight);
+                }
             });
+            return flight;
         }
         public CompletableFuture<Optional<Tree>> find(String id){return repository.find(Asyncs.nonBlank(id,"id"));}
         public CompletableFuture<Void> save(Tree tree){return repository.save(tree);}

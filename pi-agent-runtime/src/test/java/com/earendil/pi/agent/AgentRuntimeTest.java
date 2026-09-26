@@ -124,4 +124,52 @@ public class AgentRuntimeTest {
             assertTrue(seen.get(0).isCancelled());
         }
     }
+
+    @Test public void policySeesOnlyValidatedArguments(){
+        final AtomicInteger policyEvaluations=new AtomicInteger();
+        com.earendil.pi.security.Security.Policy casting=new com.earendil.pi.security.Security.Policy(){
+            public com.earendil.pi.security.Security.Decision evaluate(Tools.Call call){
+                policyEvaluations.incrementAndGet();
+                String text=(String)call.getArguments().get("text");
+                return text==null?com.earendil.pi.security.Security.Decision.deny("missing"):com.earendil.pi.security.Security.Decision.allow();
+            }
+        };
+        AtomicInteger turns=new AtomicInteger();
+        Llm.Client llm=new Llm.FunctionalClient(request -> {
+            if(turns.getAndIncrement()==0)return Llm.Response.tools("thinking",Collections.singletonList(Tools.Call.create("echo",Collections.<String,Object>singletonMap("text",5))));
+            return Llm.Response.answer("recovered");
+        });
+        Tools.Tool echo=new Tools.Tool(){
+            public Tools.Definition definition(){return new Tools.Definition("echo","echo",Collections.singletonList(new Tools.Parameter("text","text",true,Tools.ParameterType.STRING)));}
+            public CompletableFuture<Tools.Execution> execute(Map<String,Object> args){return CompletableFuture.completedFuture(Tools.Execution.ok(String.valueOf(args.get("text"))));}
+        };
+        Sessions.Manager sessions=new Sessions.Manager(new Sessions.InMemoryRepository());
+        try(Tools.Registry registry=new Tools.Registry();AgentRuntime runtime=new AgentRuntime(sessions,registry,llm,new Context.Assembler(Context.Config.defaults()),casting,new AgentRuntime.Config(4,1000))){
+            AgentRuntime.Result result=runtime.run("s","go").join();
+            assertEquals(AgentRuntime.StopReason.COMPLETED,result.getReason());
+            assertEquals(0,policyEvaluations.get());
+            Sessions.Tree tree=sessions.find("s").join().get();
+            assertTrue(tree.activePath().get(2).isError());
+        }
+    }
+
+    @Test public void runRecoversAfterSynchronousRepositoryFailure(){
+        final java.util.concurrent.atomic.AtomicBoolean failing=new java.util.concurrent.atomic.AtomicBoolean(true);
+        Sessions.Repository flaky=new Sessions.Repository(){
+            public CompletableFuture<java.util.Optional<Sessions.Tree>> find(String id){
+                if(failing.get())throw new IllegalStateException("db down");
+                return CompletableFuture.completedFuture(java.util.Optional.<Sessions.Tree>empty());
+            }
+            public CompletableFuture<Void> save(Sessions.Tree tree){return CompletableFuture.completedFuture(null);}
+        };
+        Llm.Client llm=new Llm.FunctionalClient(request -> Llm.Response.answer("ok"));
+        Sessions.Manager sessions=new Sessions.Manager(flaky);
+        try(Tools.Registry registry=new Tools.Registry();AgentRuntime runtime=new AgentRuntime(sessions,registry,llm,new Context.Assembler(Context.Config.defaults()),new Security.AllowAll(),new AgentRuntime.Config(4,1000))){
+            Throwable first=runtime.run("s","one").handle((r,e)->e).join();
+            assertTrue(Asyncs.unwrap(first) instanceof IllegalStateException);
+            failing.set(false);
+            AgentRuntime.Result second=runtime.run("s","two").join();
+            assertEquals(AgentRuntime.StopReason.COMPLETED,second.getReason());
+        }
+    }
 }
