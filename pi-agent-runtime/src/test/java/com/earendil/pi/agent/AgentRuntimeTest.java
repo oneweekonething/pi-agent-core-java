@@ -160,6 +160,34 @@ public class AgentRuntimeTest {
         assertTrue("tool must run only after the assistant node is persisted, saw "+savesWhenToolRan.get(),savesWhenToolRan.get()>=3);
     }
 
+    @Test public void policyFailureBecomesPairedObservation(){
+        com.earendil.pi.security.Security.Policy broken=new com.earendil.pi.security.Security.Policy(){
+            public com.earendil.pi.security.Security.Decision evaluate(Tools.Call call){throw new IllegalStateException("policy service unavailable");}
+        };
+        AtomicInteger turns=new AtomicInteger();
+        Llm.Client llm=new Llm.FunctionalClient(request -> {
+            if(turns.getAndIncrement()==0)return Llm.Response.tools("thinking",Collections.singletonList(Tools.Call.create("echo",null)));
+            return Llm.Response.answer("done");
+        });
+        Tools.Tool echo=new Tools.Tool(){
+            public Tools.Definition definition(){return new Tools.Definition("echo","echo",Collections.<Tools.Parameter>emptyList());}
+            public CompletableFuture<Tools.Execution> execute(Map<String,Object> args){return CompletableFuture.completedFuture(Tools.Execution.ok("must not run"));}
+        };
+        Sessions.Manager sessions=new Sessions.Manager(new Sessions.InMemoryRepository());
+        try(Tools.Registry registry=new Tools.Registry();AgentRuntime runtime=new AgentRuntime(sessions,registry,llm,new Context.Assembler(Context.Config.defaults()),broken,new AgentRuntime.Config(4,1000))){
+            registry.register(echo);
+            AgentRuntime.Result result=runtime.run("s","go").join();
+            assertEquals(AgentRuntime.StopReason.COMPLETED,result.getReason());
+            java.util.Set<String> callIds=new java.util.HashSet<String>();
+            java.util.Set<String> resultIds=new java.util.HashSet<String>();
+            for(Sessions.Node node:sessions.find("s").join().get().activePath()){
+                if(node.getRole()==Sessions.Role.ASSISTANT)for(Sessions.ToolCallSnapshot call:node.getToolCalls())callIds.add(call.getId());
+                if(node.getRole()==Sessions.Role.TOOL_RESULT){resultIds.add(node.getToolCallId());assertTrue(node.isError());assertTrue(node.getContent().contains("tool call failed"));}
+            }
+            assertEquals(callIds,resultIds);
+        }
+    }
+
     @Test public void policySeesOnlyValidatedArguments(){
         final AtomicInteger policyEvaluations=new AtomicInteger();
         com.earendil.pi.security.Security.Policy casting=new com.earendil.pi.security.Security.Policy(){

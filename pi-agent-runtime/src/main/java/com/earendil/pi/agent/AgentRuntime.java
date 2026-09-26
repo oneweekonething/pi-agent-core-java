@@ -113,21 +113,30 @@ public final class AgentRuntime implements AutoCloseable {
         if(cancellation.isCancelled()){appendSkipped(session,calls,index);return sessions.save(session);}
         if(index>=calls.size())return CompletableFuture.completedFuture(null);
         final Tools.Call call=calls.get(index);
-        String invalid=tools.validate(call);
-        CompletableFuture<Tools.Result> future;
-        if(invalid!=null){
-            future=CompletableFuture.completedFuture(new Tools.Result(call.getId(),call.getName(),invalid,true,0));
-        }else{
-            Security.Decision decision=policy.evaluate(call);
-            future=decision.isAllowed()
-                    ? tools.execute(call,config.toolTimeoutMillis,cancellation)
-                    : CompletableFuture.completedFuture(new Tools.Result(call.getId(),call.getName(),"tool denied: "+decision.getReason(),true,0));
-        }
-        return future.thenCompose(result -> {
+        return prepare(call,cancellation).thenCompose(result -> {
             session.appendTool(result.getCallId(),result.getToolName(),result.getContent(),result.isError());
             return sessions.save(session)
                     .thenCompose(v -> executeSequential(session,calls,index+1,cancellation));
         });
+    }
+
+    /** 执行前的整段（校验、策略、发起执行）fail closed：任何异常都归一化为配对的 error observation，绝不留下没有 tool result 的 tool call。 */
+    private CompletableFuture<Tools.Result> prepare(final Tools.Call call,final Cancellation cancellation){
+        try{
+            String invalid=tools.validate(call);
+            if(invalid!=null)return CompletableFuture.completedFuture(new Tools.Result(call.getId(),call.getName(),invalid,true,0));
+            Security.Decision decision=Asyncs.require(policy.evaluate(call),"policy decision");
+            if(!decision.isAllowed())return CompletableFuture.completedFuture(new Tools.Result(call.getId(),call.getName(),"tool denied: "+decision.getReason(),true,0));
+            return tools.execute(call,config.toolTimeoutMillis,cancellation);
+        }catch(Throwable error){
+            return CompletableFuture.completedFuture(new Tools.Result(call.getId(),call.getName(),"tool call failed: "+message(error),true,0));
+        }
+    }
+
+    private static String message(Throwable e){
+        Throwable cause=Asyncs.unwrap(e);
+        String m=cause==null?null:cause.getMessage();
+        return m==null||m.trim().isEmpty()?(cause==null?"tool call failed":cause.getClass().getSimpleName()):m;
     }
 
     private static void appendSkipped(Sessions.Tree session,List<Tools.Call> calls,int from){

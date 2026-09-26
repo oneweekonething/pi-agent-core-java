@@ -21,6 +21,7 @@ user message
 - 同一个模型响应里的 tool calls 默认顺序执行。这保留了 observation 顺序的确定性。
 - 被拒绝、未知、超时或失败的工具仍会产生 `error=true` 的 `TOOL_RESULT` 节点。
 - 工具调用先解析工具并校验参数（`Tools.Registry.validate`），再交给 `Security.Policy` 评估——策略只会看到已通过校验的参数。校验失败直接产生 error observation，既不进入策略也不执行工具。
+- 执行前的整段（校验、策略评估、发起执行）fail closed：任何同步异常（含自定义 Policy 或 `Tool.definition()` 抛出）都归一化为配对的 error observation（`tool call failed: ...`），绝不留下没有 tool result 的 tool call。
 - 不要自动重试任意工具；重试可能复制副作用。只有工具幂等性明确时才添加重试策略。
 - `maxTurns` 限制的是模型轮次，不是单个工具调用。
 - 同一个 session id 同时只允许一个 run 处于活跃状态（以 `AgentRuntime` 实例为界）。对同一 session 的第二次并发 `run` 会以 `IllegalStateException` 快速失败，而不是把交错追加写进会话树。跨 `AgentRuntime` 实例或跨进程的互斥需要 Repository/session 层的租约或分布式锁。

@@ -81,8 +81,8 @@ public final class Llm {
         private final RetryPolicy policy;
         private final int maxAttempts;
         private final long baseBackoffMillis,maxBackoffMillis;
-        private final java.util.Set<CompletableFuture<Response>> pending=
-                java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<CompletableFuture<Response>,Boolean>());
+        private final java.util.concurrent.ConcurrentMap<CompletableFuture<Response>,Cancellation> pending=
+                new java.util.concurrent.ConcurrentHashMap<CompletableFuture<Response>,Cancellation>();
         private final java.util.concurrent.atomic.AtomicBoolean closed=new java.util.concurrent.atomic.AtomicBoolean(false);
         private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t=new Thread(r,"pi-llm-retry"); t.setDaemon(true); return t;
@@ -103,17 +103,23 @@ public final class Llm {
         public CompletableFuture<Response> complete(final Request request,final Cancellation cancellation){
             final Cancellation token=cancellation==null?Cancellation.create():Cancellation.linkedTo(cancellation);
             final CompletableFuture<Response> result=new CompletableFuture<Response>();
+            pending.put(result,token);
+            result.whenComplete((response,error)->pending.remove(result));
             if(closed.get()){
+                token.cancel();
                 result.completeExceptionally(new CancellationException("retry client closed"));
                 return result;
             }
-            pending.add(result);
-            result.whenComplete((response,error)->pending.remove(result));
             attempt(request,1,token,result);
             return result;
         }
         private void attempt(final Request request,final int attempt,final Cancellation token,final CompletableFuture<Response> result){
             if(result.isDone())return;
+            if(closed.get()){
+                token.cancel();
+                result.completeExceptionally(new CancellationException("retry client closed"));
+                return;
+            }
             if(token.isCancelled()){result.completeExceptionally(new CancellationException("llm call cancelled"));return;}
             CompletableFuture<Response> call;
             try{call=Asyncs.require(delegate.complete(request,token),"delegate future");}
@@ -142,7 +148,11 @@ public final class Llm {
             if(closed.compareAndSet(false,true)){
                 scheduler.shutdownNow();
                 CancellationException closedError=new CancellationException("retry client closed");
-                for(CompletableFuture<Response> waiting:pending)waiting.completeExceptionally(closedError);
+                for(java.util.Map.Entry<CompletableFuture<Response>,Cancellation> waiting:pending.entrySet()){
+                    waiting.getValue().cancel();
+                    waiting.getKey().completeExceptionally(closedError);
+                }
+                pending.clear();
             }
         }
     }

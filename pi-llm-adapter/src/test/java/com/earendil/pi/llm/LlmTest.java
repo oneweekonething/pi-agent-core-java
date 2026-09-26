@@ -134,4 +134,22 @@ public class LlmTest {
         assertTrue(error instanceof CancellationException);
         assertEquals(1,attempts.get());
     }
+
+    @Test(timeout=5000) public void closeCancelsInFlightTokenAndRejectsNewCalls(){
+        final java.util.List<Cancellation> tokens=new java.util.concurrent.CopyOnWriteArrayList<Cancellation>();
+        Llm.Client hanging=new Llm.Client(){
+            public CompletableFuture<Llm.Response> complete(Llm.Request request){return new CompletableFuture<Llm.Response>();}
+            public CompletableFuture<Llm.Response> complete(Llm.Request request,Cancellation cancellation){
+                tokens.add(cancellation);
+                return new CompletableFuture<Llm.Response>();
+            }
+        };
+        Llm.RetryClient client=new Llm.RetryClient(hanging,3,10000,20000);
+        CompletableFuture<Llm.Response> inFlight=client.complete(request());
+        client.close();
+        assertTrue(inFlight.handle((r,e)->e).join() instanceof CancellationException);
+        assertEquals(1,tokens.size());
+        assertTrue(tokens.get(0).isCancelled());
+        assertTrue(client.complete(request()).handle((r,e)->e).join() instanceof CancellationException);
+    }
 }
